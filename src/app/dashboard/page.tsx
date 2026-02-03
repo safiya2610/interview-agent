@@ -11,14 +11,14 @@ import { useSearchParams } from "next/navigation";
 
 function DashboardInner() {
   const [modalOpen, setModalOpen] = useState(false);
-  const [session, setSession] = useState<null | { company: string; topic: string; duration: number }>(null);
+  const [session, setSession] = useState<null | { company: string; topic: string; duration: number; excludeTopics: string[] }>(null);
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [recentSessions, setRecentSessions] = useState<any[]>([]);
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentError, setRecentError] = useState<string | null>(null);
   const searchParams = useSearchParams();
 
-  function startSession(opts: { company: string; topic: string; duration: number }) {
+  function startSession(opts: { company: string; topic: string; duration: number; excludeTopics: string[] }) {
     setSession(opts);
     setModalOpen(false);
   }
@@ -64,7 +64,7 @@ function DashboardInner() {
           .from("interview_sessions")
           .select("id, company, topic, created_at, duration_minutes, elapsed_seconds, agent_score")
           .order("created_at", { ascending: false })
-          .limit(5);
+          .limit(3);
         if (error) throw error;
         if (!cancelled) setRecentSessions(data ?? []);
       } catch (e: any) {
@@ -100,7 +100,7 @@ function DashboardInner() {
     const duration = searchParams?.get("duration");
     if (company && topic && duration) {
       const dur = parseInt(duration, 10) || 30;
-      setSession({ company, topic, duration: dur });
+      setSession({ company, topic, duration: dur, excludeTopics: [] });
     }
   }, [searchParams]);
 
@@ -146,7 +146,7 @@ function DashboardInner() {
               <p className="text-slate-400">Your AI preparation stats for the last 30 days.</p>
             </div>
             <div className="flex gap-2">
-              <span className="px-3 py-1 bg-green-500/10 border border-green-500/20 text-green-400 text-xs font-bold rounded-full">Top 5% in Dynamic Programming</span>
+              <span className="px-3 py-1 bg-green-500/10 border border-green-500/20 text-green-400 text-xs font-bold rounded-full">Become the ideal candidate.</span>
             </div>
           </div>
 
@@ -157,7 +157,7 @@ function DashboardInner() {
               <h3 className="font-bold text-lg">Recent Sessions</h3>
               <div className="flex items-center gap-3">
                 <button onClick={() => setModalOpen(true)} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition shadow-lg shadow-blue-600/20">+ Start New Interview</button>
-                <button className="text-xs text-blue-400 hover:text-blue-300">View All</button>
+                <Link href="/dashboard/sessions" className="text-xs text-blue-400 hover:text-blue-300">View All</Link>
               </div>
             </div>
             <div className="overflow-x-auto p-4">
@@ -189,7 +189,13 @@ function DashboardInner() {
           <SetupModal open={modalOpen} onClose={() => setModalOpen(false)} onStart={startSession} />
         </main>
       ) : (
-        <EditorWorkspace company={session.company} topic={session.topic} duration={session.duration} onEnd={() => setSession(null)} />
+        <EditorWorkspace
+          company={session.company}
+          topic={session.topic}
+          duration={session.duration}
+          excludeTopics={session.excludeTopics}
+          onEnd={() => setSession(null)}
+        />
       )}
     </div>
   );

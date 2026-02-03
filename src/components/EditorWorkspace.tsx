@@ -43,23 +43,114 @@ type Props = {
   company: string;
   topic: string;
   duration: number;
+  excludeTopics?: string[];
   onEnd?: () => void;
 };
 
-export default function EditorWorkspace({ company, topic, duration, onEnd }: Props) {
+export default function EditorWorkspace({ company, topic, duration, excludeTopics, onEnd }: Props) {
   const [unlocked, setUnlocked] = useState(false);
   const [agentText, setAgentText] = useState("\"Connecting to session...\"");
-  const [listening, setListening] = useState(true);
+  const [listening, setListening] = useState(false); // Default to false for text input initially
   const [editorValue, setEditorValue] = useState(`// Implement your solution here\n`);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const [timerSeconds, setTimerSeconds] = useState(duration * 60);
   const sessionIdRef = useRef<string | null>(null);
   const startedAtMsRef = useRef<number>(Date.now());
   const endedRef = useRef(false);
+  const startedInterviewKeyRef = useRef<string | null>(null);
+
+  // Agent State
+  const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
+  const [interviewState, setInterviewState] = useState<'intro' | 'approach' | 'coding' | 'finished'>('intro');
+  const [currentQuestion, setCurrentQuestion] = useState<any>(null);
+  const [userInput, setUserInput] = useState("");
+  const [isAgentLoading, setIsAgentLoading] = useState(false);
+
+  const excludeKey = (excludeTopics ?? []).filter(Boolean).join(",");
+  const interviewKey = `${company}__${topic}__${duration}__${excludeKey}`;
 
   useEffect(() => {
-    setAgentText(`"Welcome. I've pulled a question from ${company}'s bank for ${topic}. Before coding, explain your approach to the agent."`);
-  }, [company, topic]);
+    // Guard against duplicate calls in dev (React StrictMode) and against
+    // parent rerenders that pass a new excludeTopics array instance.
+    if (startedInterviewKeyRef.current === interviewKey) return;
+    startedInterviewKeyRef.current = interviewKey;
+
+    setUnlocked(false);
+    setMessages([]);
+    setInterviewState("intro");
+    setCurrentQuestion(null);
+    setAgentText(`"Connecting to AI Interviewer..."`);
+
+    void startInterview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interviewKey]);
+
+  async function startInterview() {
+    // Send an initial empty message to trigger the agent's greeting
+    await sendMessageToAgent("Hello, I am ready for the interview.", true);
+  }
+
+  async function sendMessageToAgent(content: string, isSystemInit = false) {
+    if (!content.trim()) return;
+    
+    setIsAgentLoading(true);
+    const newMessages = isSystemInit ? [] : [...messages, { role: 'user', content }];
+    setMessages(newMessages);
+    if (!isSystemInit) setUserInput("");
+
+    try {
+      const res = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: newMessages,
+          state: interviewState,
+          currentQuestion,
+          code: editorValue, // Send current code to agent
+          company,
+          topic,
+          excludeTopics, // Pass exclusions to API
+          difficulty: 'Medium' // Default for now
+        })
+      });
+
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok) {
+        const detail = typeof data?.detail === "string" ? ` ${data.detail}` : "";
+        const retry = typeof data?.retryAfterSeconds === "number" ? ` Retry in ${data.retryAfterSeconds}s.` : "";
+        const msg = typeof data?.error === "string" ? data.error : `Agent API error (${res.status})`;
+        const combined = `${msg}.${detail}${retry}`.trim();
+        setAgentText(`"${combined}"`);
+        setMessages((prev) => [...prev, { role: 'model', content: combined }]);
+        return;
+      }
+      
+      if (data.message) {
+        setAgentText(`"${data.message}"`);
+        setMessages(prev => [...prev, { role: 'model', content: data.message }]);
+      }
+
+      if (data.newQuestion) {
+        setCurrentQuestion(data.newQuestion);
+      }
+
+      if (data.nextState && data.nextState !== interviewState) {
+        setInterviewState(data.nextState);
+        if (data.nextState === 'coding') {
+          setUnlocked(true);
+          setAgentText(`"${data.message || "Editor unlocked. Good luck!"}"`);
+        }
+      }
+
+    } catch (err) {
+      console.error("Agent Error", err);
+      setAgentText("\"Connection error. Please check your API key and try again.\"");
+      setMessages(prev => [...prev, { role: 'model', content: "Connection error. Please check your API key and try again." }]);
+    } finally {
+      setIsAgentLoading(false);
+    }
+  }
+
 
   // Create a session record when the interview starts.
   useEffect(() => {
@@ -87,6 +178,7 @@ export default function EditorWorkspace({ company, topic, duration, onEnd }: Pro
               id: stableId,
               company,
               topic,
+              exclude_topics: (excludeTopics ?? []).filter(Boolean),
               duration_minutes: duration,
               started_at: startedAtIso,
               ended_at: null,
@@ -113,7 +205,7 @@ export default function EditorWorkspace({ company, topic, duration, onEnd }: Pro
       void finishSessionRow({ force: false });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [company, topic, duration]);
+  }, [company, topic, duration, excludeTopics]);
 
   useEffect(() => {
     const t = setInterval(() => setTimerSeconds((s) => Math.max(0, s - 1)), 1000);
@@ -237,29 +329,81 @@ export default function EditorWorkspace({ company, topic, duration, onEnd }: Pro
 
           <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
             <div className="mb-4">
-              <span className="text-xs font-bold text-green-400 bg-green-400/10 px-2 py-1 rounded">Easy</span>
+              <span className="text-xs font-bold text-green-400 bg-green-400/10 px-2 py-1 rounded">{currentQuestion?.difficulty || "Loading..."}</span>
               <span className="text-xs font-bold text-slate-400 ml-2">{topic}</span>
             </div>
-            <h2 className="text-xl font-bold mb-4">Valid Palindrome</h2>
-            <div className="prose prose-invert prose-sm text-slate-300">
-              <p>A phrase is a <strong>palindrome</strong> if, after converting all uppercase letters into lowercase letters and removing all non-alphanumeric characters, it reads the same forward and backward.</p>
-              <p>Alphanumeric characters include letters and numbers.</p>
-              <p>Given a string <code>s</code>, return <code>true</code> if it is a palindrome, or <code>false</code> otherwise.</p>
-
-              <div className="bg-slate-800/50 p-4 rounded-lg border border-white/5 my-4">
-                <p className="font-mono text-xs text-slate-400 mb-1">Example 1:</p>
-                <p className="font-mono text-sm mb-2">Input: s = "A man, a plan, a canal: Panama"</p>
-                <p className="font-mono text-sm">Output: true</p>
+            {(excludeTopics ?? []).length > 0 && (
+              <div className="mb-4">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Excluding</span>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(excludeTopics ?? []).map((t) => (
+                    <span key={t} className="px-2 py-1 rounded-md border border-white/10 bg-slate-900/40 text-xs text-slate-300">
+                      {t}
+                    </span>
+                  ))}
+                </div>
               </div>
+            )}
+            
+            {currentQuestion ? (
+              <>
+                <h2 className="text-xl font-bold mb-4">{currentQuestion.title}</h2>
+                <div className="prose prose-invert prose-sm text-slate-300">
+                  <p>{currentQuestion.description || currentQuestion.prompt}</p>
+                  
+                  {currentQuestion.examples && Array.isArray(currentQuestion.examples) && currentQuestion.examples.map((ex: any, i: number) => (
+                    <div key={i} className="bg-slate-800/50 p-4 rounded-lg border border-white/5 my-4">
+                      <p className="font-mono text-xs text-slate-400 mb-1">Example {i + 1}:</p>
+                      <p className="font-mono text-sm mb-2">Input: {ex.input}</p>
+                      <p className="font-mono text-sm">Output: {ex.output}</p>
+                    </div>
+                  ))}
 
-              <p><strong>Constraints:</strong></p>
-              <ul className="list-disc pl-4 space-y-1">
-                <li><code>{'1 <= s.length <= 2 * 10^5'}</code></li>
-                <li><code>s</code> consists only of printable ASCII characters.</li>
-              </ul>
-            </div>
+                  {currentQuestion.constraints && (
+                    <>
+                      <p><strong>Constraints:</strong></p>
+                      <div className="pl-4 space-y-1 font-mono text-xs">
+                        {currentQuestion.constraints}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-64 text-slate-500">
+                <p>Waiting for interviewer to assign a question...</p>
+              </div>
+            )}
+          </div>
+
+          {/* Chat Input Area */}
+          <div className="p-4 border-t border-white/5 bg-slate-900/50">
+            <form 
+              onSubmit={(e) => {
+                e.preventDefault();
+                sendMessageToAgent(userInput);
+              }}
+              className="flex gap-2"
+            >
+              <input
+                type="text"
+                value={userInput}
+                onChange={(e) => setUserInput(e.target.value)}
+                placeholder="Type your response..."
+                className="flex-1 bg-slate-800 border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                disabled={isAgentLoading}
+              />
+              <button 
+                type="submit" 
+                disabled={isAgentLoading || !userInput.trim()}
+                className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-semibold hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Send
+              </button>
+            </form>
           </div>
         </aside>
+
 
         <main className="flex-1 flex flex-col bg-[#1e1e1e] relative">
           <div className="h-10 bg-[#1e1e1e] border-b border-[#333] flex items-center justify-between pl-4 pr-64 select-none">
