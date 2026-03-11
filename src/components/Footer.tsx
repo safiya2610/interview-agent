@@ -3,6 +3,57 @@ import React from "react";
 export default function Footer() {
   return (
     <footer id="contact" className="py-20 border-t border-white/5">
+      <div className="mb-12" style={{marginBottom:'100px'}}>
+        <h2 className="text-white font-bold text-3xl mb-12 tracking-tight text-center">Prepare for Interviews at Top Tech Companies</h2>
+      </div>
+      <div className="mb-20 flex justify-center">
+        <div className="slider">
+          <div className="slide-track">
+            <div className="slide">
+              <img src="https://static.vecteezy.com/system/resources/thumbnails/022/613/027/small/google-icon-logo-symbol-free-png.png" height="100" width="100" alt="Google" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/a/a9/Amazon_logo.svg" height="140" width="140" alt="Amazon" style={{marginTop:'25px'}} className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/f/fa/Apple_logo_black.svg" height="80" width="80" alt="Apple" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/5/51/Facebook_f_logo_%282019%29.svg" height="80" width="80" alt="Meta" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/7/7a/Logonetflix.png" height="110" width="110" style={{marginTop: '20px'}} alt="Netflix" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/4/44/Microsoft_logo.svg" height="80" width="80" alt="Microsoft" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/c/cc/Uber_logo_2018.png" height="120" width="120" alt="Uber" style={{marginTop: '20px'}} className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://static.vecteezy.com/system/resources/thumbnails/022/613/027/small/google-icon-logo-symbol-free-png.png" height="100" width="100" alt="Google" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/a/a9/Amazon_logo.svg" height="140" width="140" alt="Amazon" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/f/fa/Apple_logo_black.svg" height="80" width="80" alt="Apple" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/5/51/Facebook_f_logo_%282019%29.svg" height="80" width="80" alt="Meta" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/7/7a/Logonetflix.png" height="110" width="110" alt="Netflix" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/4/44/Microsoft_logo.svg" height="80" width="80" alt="Microsoft" className="mx-auto" />
+            </div>
+            <div className="slide">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/c/cc/Uber_logo_2018.png" height="80" width="80" alt="Uber" className="mx-auto" />
+            </div>
+          </div>
+        </div>
+      </div>
       <div className="flex flex-col md:flex-row justify-between items-center gap-12">
         <div className="text-center md:text-left">
           <h3 className="text-white font-bold text-3xl mb-3 tracking-tight">Let&apos;s Connect</h3>
