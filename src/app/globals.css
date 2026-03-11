@@ -297,19 +297,19 @@ body { font-family: 'Inter', sans-serif; background-color: var(--bg-deep); color
   transform-style: preserve-3d;
   overflow: hidden;
   z-index: 0;
-  opacity: 0.94;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.86) 6%, rgba(0, 0, 0, 0.96) 94%, transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.86) 6%, rgba(0, 0, 0, 0.96) 94%, transparent 100%);
+  opacity: 1;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.92) 5%, rgba(0, 0, 0, 0.98) 95%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.92) 5%, rgba(0, 0, 0, 0.98) 95%, transparent 100%);
 }
 
 .depth-term-token {
   position: absolute;
   font-family: "JetBrains Mono", monospace;
-  font-weight: 600;
+  font-weight: 650;
   letter-spacing: 0.01em;
   white-space: nowrap;
-  color: rgba(226, 232, 240, 0.62);
-  text-shadow: 0 0 10px rgba(96, 165, 250, 0.3);
+  color: rgba(226, 232, 240, 0.74);
+  text-shadow: 0 0 12px rgba(96, 165, 250, 0.34);
   opacity: 0;
   animation-name: depthTermFloat;
   animation-timing-function: linear;
@@ -320,18 +320,18 @@ body { font-family: 'Inter', sans-serif; background-color: var(--bg-deep); color
 @keyframes depthTermFloat {
   0% {
     transform: translate3d(0, 0, var(--token-start-z, -900px)) rotate(var(--token-rotation, 0deg)) scale(var(--token-start-scale, 0.24));
-    filter: blur(var(--token-start-blur, 1.6px)) brightness(0.82);
+    filter: blur(var(--token-start-blur, 1.6px)) brightness(0.86);
     opacity: 0;
   }
-  20% {
-    opacity: calc(var(--token-opacity, 0.22) * 0.65);
+  14% {
+    opacity: calc(var(--token-opacity, 0.22) * 0.75);
   }
-  64% {
+  74% {
     opacity: var(--token-opacity, 0.22);
   }
   100% {
     transform: translate3d(var(--drift-x, 0px), var(--drift-y, 0px), var(--token-end-z, 140px)) rotate(var(--token-rotation, 0deg)) scale(var(--token-end-scale, 1.2));
-    filter: blur(var(--token-end-blur, 0.24px)) brightness(1.16);
+    filter: blur(var(--token-end-blur, 0.24px)) brightness(1.18);
     opacity: 0;
   }
 }

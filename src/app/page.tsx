@@ -37,6 +37,10 @@ export default function Page() {
       "O(n log n)",
       "O(log n)",
       "O(1)",
+      "Complexity",
+      "Time",
+      "Space",
+      "Big-O",
       "TLE",
       "WA",
       "RE",
@@ -60,29 +64,24 @@ export default function Page() {
       "Heap",
     ];
 
-    return Array.from({ length: 146 }, (_, index) => {
+    const rows = 12;
+    const cols = 14;
+    const totalTerms = rows * cols;
+
+    return Array.from({ length: totalTerms }, (_, index) => {
       const seed = index + 1;
+      const row = Math.floor(index / cols);
+      const col = index % cols;
       const depth = randomFromSeed(seed * 9.17);
       const termIndex = Math.floor(randomFromSeed(seed * 8.29) * interviewTerms.length);
-      const zone = randomFromSeed(seed * 12.41);
-      let left: number;
-      let top: number;
+      const cellLeft = ((col + 0.5) / cols) * 100;
+      const cellTop = ((row + 0.5) / rows) * 100;
+      const jitterX = (randomFromSeed(seed * 1.13) - 0.5) * (96 / cols);
+      const jitterY = (randomFromSeed(seed * 2.17) - 0.5) * (82 / rows);
+      const left = Math.min(98, Math.max(2, cellLeft + jitterX));
+      const top = Math.min(97, Math.max(3, cellTop + jitterY));
 
-      if (zone < 0.34) {
-        // Lower left side band (feature/video empty spaces)
-        left = 1 + randomFromSeed(seed * 1.13) * 22;
-        top = 46 + randomFromSeed(seed * 2.17) * 50;
-      } else if (zone < 0.68) {
-        // Lower right side band
-        left = 77 + randomFromSeed(seed * 1.13) * 22;
-        top = 46 + randomFromSeed(seed * 2.17) * 50;
-      } else {
-        // Global distribution across the full landing page
-        left = 2 + randomFromSeed(seed * 1.13) * 96;
-        top = 4 + randomFromSeed(seed * 2.17) * 92;
-      }
-
-      const fontSize = 7.5 + depth * 5.5;
+      const fontSize = 8.8 + depth * 6.3;
       const duration = 9.6 + randomFromSeed(seed * 4.11) * 11.4;
       const delay = randomFromSeed(seed * 5.31) * -20;
       const outwardX = (left - 50) * 0.34;
@@ -90,7 +89,7 @@ export default function Page() {
       const driftX = -46 + randomFromSeed(seed * 6.53) * 92 + outwardX;
       const driftY = -42 + randomFromSeed(seed * 7.61) * 84 + outwardY;
       const rotation = -10 + randomFromSeed(seed * 3.19) * 20;
-      const opacity = 0.16 + depth * 0.24;
+      const opacity = 0.2 + depth * 0.28;
       const startScale = 0.2 + depth * 0.16;
       const endScale = 0.95 + depth * 0.45;
       const startBlur = 1.8 - depth * 1.0;
