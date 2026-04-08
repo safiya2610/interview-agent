@@ -26,6 +26,7 @@ type DepthTokenStyle = CSSProperties & {
 export default function Page() {
   const router = useRouter();
   const [modalOpen, setModalOpen] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
   const depthTerms = useMemo(() => {
     const randomFromSeed = (seed: number) => {
       const x = Math.sin(seed * 9999.91) * 10000;
@@ -120,6 +121,7 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
+    setIsMounted(true);
     function onOpen() {
       setModalOpen(true);
     }
@@ -141,7 +143,7 @@ export default function Page() {
       <Nav />
       <main id="landing-page" className="relative pt-32">
         <div className="depth-term-field pointer-events-none" aria-hidden="true">
-          {depthTerms.map((term) => {
+          {isMounted && depthTerms.map((term) => {
             const style: DepthTokenStyle = {
               left: `${term.left}%`,
               top: `${term.top}%`,

@@ -102,6 +102,11 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
   const [customInput, setCustomInput] = useState<string>("");
   const [showCustomInput, setShowCustomInput] = useState(false);
   const [diagnostics, setDiagnostics] = useState<{ line: number; column?: number; message: string }[]>([]);
+  const [isAiSpeaking, setIsAiSpeaking] = useState(false);
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
+  const recognitionRef = useRef<any>(null);
+  const [interimTranscript, setInterimTranscript] = useState("");
+  const accumulatedTranscriptRef = useRef<string>("");
   const preRef = useRef<HTMLElement | null>(null);
   const gutterRef = useRef<HTMLDivElement | null>(null);
   const GUTTER_WIDTH = 56;
@@ -133,6 +138,136 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     // Send an initial empty message to trigger the agent's greeting
     await sendMessageToAgent("Hello, I am ready for the interview.", true);
   }
+
+  // Speech Recognition (STT) Logic
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true; // Listen until manually stopped
+    recognition.interimResults = true;
+    recognition.lang = "en-IN";
+
+    recognition.onresult = (event: any) => {
+      let finalTranscript = "";
+      let currentInterim = "";
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          currentInterim += event.results[i][0].transcript;
+        }
+      }
+      
+      if (finalTranscript) {
+        accumulatedTranscriptRef.current += " " + finalTranscript;
+      }
+      setInterimTranscript(currentInterim);
+    };
+
+    recognition.onend = () => {
+      setListening(false);
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error("Speech Recognition Error", event.error);
+      setListening(false);
+    };
+
+    recognitionRef.current = recognition;
+  }, []);
+
+  const toggleListening = () => {
+    if (!recognitionRef.current) {
+      alert("Speech recognition is not supported in your browser. Please use Chrome or Edge.");
+      return;
+    }
+
+    if (listening) {
+      recognitionRef.current.stop();
+      setListening(false);
+      
+      const finalMsg = accumulatedTranscriptRef.current.trim();
+      if (finalMsg) {
+        sendMessageToAgent(finalMsg);
+      }
+      accumulatedTranscriptRef.current = "";
+      setInterimTranscript("");
+    } else {
+      accumulatedTranscriptRef.current = "";
+      setInterimTranscript("");
+      setListening(true);
+      recognitionRef.current.start();
+    }
+  };
+
+  // Voice Output (TTS) Logic
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+
+    const loadVoices = () => {
+      const v = window.speechSynthesis.getVoices();
+      if (v.length > 0) {
+        voicesRef.current = v;
+      }
+    };
+
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    return () => {
+      if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null;
+    };
+  }, []);
+
+  const speak = (text: string, retryCount = 0) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+
+    // Cancel any ongoing speech
+    window.speechSynthesis.cancel();
+    setIsAiSpeaking(false);
+
+    // Clean markdown or special chars for better speech
+    const cleanText = text.replace(/\*\*/g, "").replace(/#/g, "").replace(/`/g, "").replace(/\[.*?\]/g, "").trim();
+    if (!cleanText) return;
+
+    // Retry if voices aren't loaded yet
+    if (voicesRef.current.length === 0 && retryCount < 5) {
+      setTimeout(() => speak(text, retryCount + 1), 200);
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.lang = "en-IN";
+    
+    // Attempt to find a high-quality "premium" Indian voice
+    const voices = voicesRef.current.length > 0 ? voicesRef.current : window.speechSynthesis.getVoices();
+    
+    // Priority: 1. Natural/Premium Indian, 2. Google Indian, 3. Any Indian, 4. Any English
+    const preferredVoice = 
+      voices.find(v => v.lang.startsWith("en-IN") && (v.name.includes("Natural") || v.name.includes("Premium"))) ||
+      voices.find(v => v.lang.startsWith("en-IN") && v.name.includes("Google")) ||
+      voices.find(v => v.lang.startsWith("en-IN")) ||
+      voices.find(v => v.lang.startsWith("en-GB") && (v.name.includes("Natural") || v.name.includes("Premium"))) ||
+      voices.find(v => v.lang.startsWith("en"));
+
+    if (preferredVoice) {
+      utterance.voice = preferredVoice;
+    }
+
+    // Slightly adjust rate and pitch for a more natural human feel
+    utterance.rate = 0.95; // Slightly slower can feel more deliberate/human
+    utterance.pitch = 1.05; // Slightly higher pitch often sounds clearer/less robotic
+    utterance.volume = 1.0;
+
+    utterance.onstart = () => setIsAiSpeaking(true);
+    utterance.onend = () => setIsAiSpeaking(false);
+    utterance.onerror = () => setIsAiSpeaking(false);
+
+    window.speechSynthesis.speak(utterance);
+  };
 
   async function sendMessageToAgent(content: string, isSystemInit = false) {
     if (!content.trim()) return;
@@ -166,19 +301,23 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
         const combined = `${msg}.${detail}${retry}`.trim();
         setAgentText(`"${combined}"`);
         setMessages((prev) => [...prev, { role: 'model', content: combined }]);
+        speak(combined); // Speak the error/retry message
         return;
       }
 
       if (data.message) {
         setAgentText(`"${data.message}"`);
         setMessages(prev => [...prev, { role: 'model', content: data.message }]);
+        speak(data.message); // Speak the AI response
       }
 
       if (data.nextState && data.nextState !== interviewState) {
         setInterviewState(data.nextState);
         if (data.nextState === 'coding') {
           setUnlocked(true);
-          setAgentText(`"${data.message || "Editor unlocked. Good luck!"}"`);
+          const unlockMsg = data.message || "Editor unlocked. Good luck!";
+          setAgentText(`"${unlockMsg}"`);
+          speak(unlockMsg); // Speak the unlock message
         }
       }
 
@@ -186,6 +325,7 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
       console.error("Agent Error", err);
       setAgentText("\"Connection error. Please check your API key and try again.\"");
       setMessages(prev => [...prev, { role: 'model', content: "Connection error. Please check your API key and try again." }]);
+      speak("Connection error. Please check your API key and try again.");
     } finally {
       setIsAgentLoading(false);
     }
@@ -275,7 +415,12 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
 
   useEffect(() => {
     const t = setInterval(() => setTimerSeconds((s) => Math.max(0, s - 1)), 1000);
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
   }, []);
 
   // Handle drag-to-resize for console panel
@@ -358,12 +503,16 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
   }
 
   function simulateUnlock() {
-    setAgentText("Analyzing approach... Logic seems sound. Unlocking editor.");
+    const msg1 = "Analyzing approach... Logic seems sound. Unlocking editor.";
+    setAgentText(msg1);
+    speak(msg1);
     setListening(false);
     setTimeout(() => {
       setInterviewState('coding');
       setUnlocked(true);
-      setAgentText(`Editor unlocked. You have ${duration} minutes to implement the solution.`);
+      const msg2 = `Editor unlocked. You have ${duration} minutes to implement the solution.`;
+      setAgentText(msg2);
+      speak(msg2);
       editorRef.current?.focus();
     }, 1200);
   }
@@ -598,7 +747,7 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
             </div>
 
             <div className="flex-1 flex flex-col items-center justify-center">
-              <div id="voice-viz" className={`flex items-center gap-1 h-12 mb-4 ${listening ? 'speaking' : ''}`}>
+              <div id="voice-viz" className={`flex items-center gap-1 h-12 mb-4 ${listening || isAiSpeaking ? 'speaking' : ''}`}>
                 <div className="wave-bar" style={{ animationDelay: '0.0s' }}></div>
                 <div className="wave-bar" style={{ animationDelay: '0.1s' }}></div>
                 <div className="wave-bar" style={{ animationDelay: '0.2s' }}></div>
@@ -606,13 +755,18 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
                 <div className="wave-bar" style={{ animationDelay: '0.1s' }}></div>
               </div>
               <p id="agent-text" className="text-center text-sm text-slate-200 font-medium leading-relaxed">{agentText}</p>
+              {interimTranscript && (
+                <p className="mt-2 text-xs text-slate-400 italic font-mono text-center opacity-60">
+                   Hearing: {interimTranscript}...
+                </p>
+              )}
             </div>
 
             <div className="mt-4 flex gap-2 justify-center">
-              <button id="mic-btn" className={`w-10 h-10 rounded-full ${listening ? 'bg-blue-600' : 'bg-slate-700'} hover:bg-blue-500 flex items-center justify-center transition shadow-lg shadow-blue-500/20`} onClick={() => setListening((s) => !s)}>
+              <button id="mic-btn" className={`w-10 h-10 rounded-full ${listening ? 'bg-red-600 animate-pulse' : 'bg-blue-600'} hover:bg-blue-500 flex items-center justify-center transition shadow-lg shadow-blue-500/20`} onClick={toggleListening}>
                 <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" /><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" /></svg>
               </button>
-              <button onClick={simulateUnlock} className="px-4 py-2 rounded-full border border-white/10 text-xs font-semibold hover:bg-white/5 transition">I'm Ready to Code</button>
+              {!unlocked && <button onClick={simulateUnlock} className="px-4 py-2 rounded-full border border-white/10 text-xs font-semibold hover:bg-white/5 transition">I'm Ready to Code</button>}
             </div>
           </div>
 
@@ -676,32 +830,7 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
             )}
           </div>
 
-          {/* Chat Input Area */}
-          <div className="p-4 border-t border-white/5 bg-slate-900/50">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                sendMessageToAgent(userInput);
-              }}
-              className="flex gap-2"
-            >
-              <input
-                type="text"
-                value={userInput}
-                onChange={(e) => setUserInput(e.target.value)}
-                placeholder="Type your response..."
-                className="flex-1 bg-slate-800 border border-white/10 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                disabled={isAgentLoading}
-              />
-              <button
-                type="submit"
-                disabled={isAgentLoading || !userInput.trim()}
-                className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-semibold hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Send
-              </button>
-            </form>
-          </div>
+          {/* Removed manual text input form per user request. Communication is now voice-first (STT). */}
         </aside>
 
 
