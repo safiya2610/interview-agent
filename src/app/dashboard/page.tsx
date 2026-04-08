@@ -9,11 +9,21 @@ import EditorWorkspace from "../../components/EditorWorkspace";
 import { supabase } from "../../lib/supabaseClient";
 import { useSearchParams } from "next/navigation";
 
+type RecentSession = {
+  id: string;
+  company: string;
+  topic: string;
+  created_at: string;
+  duration_minutes: number;
+  elapsed_seconds: number | null;
+  agent_score: number | null;
+};
+
 function DashboardInner() {
   const [modalOpen, setModalOpen] = useState(false);
   const [session, setSession] = useState<null | { company: string; topic: string; duration: number; excludeTopics: string[] }>(null);
   const [displayName, setDisplayName] = useState<string | null>(null);
-  const [recentSessions, setRecentSessions] = useState<any[]>([]);
+  const [recentSessions, setRecentSessions] = useState<RecentSession[]>([]);
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentError, setRecentError] = useState<string | null>(null);
   const searchParams = useSearchParams();
@@ -33,7 +43,8 @@ function DashboardInner() {
         if (error) throw error;
         if (!mounted) return;
         const u = data.user ?? null;
-        const name = (u as any)?.user_metadata?.full_name || (u ? (u.email?.split("@")[0] ?? null) : null);
+        const metadata = (u?.user_metadata ?? {}) as { full_name?: string };
+        const name = metadata.full_name || (u ? (u.email?.split("@")[0] ?? null) : null);
         setDisplayName(name);
       } catch (err) {
         console.error("Failed to load user for dashboard", err);
@@ -48,7 +59,10 @@ function DashboardInner() {
       else setDisplayName(null);
     });
 
-    return () => listener.subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      listener.subscription.unsubscribe();
+    };
   }, []);
 
   // Load recent sessions for the table
@@ -67,8 +81,8 @@ function DashboardInner() {
           .limit(3);
         if (error) throw error;
         if (!cancelled) setRecentSessions(data ?? []);
-      } catch (e: any) {
-        if (!cancelled) setRecentError(String(e?.message ?? e));
+      } catch (error) {
+        if (!cancelled) setRecentError(String(error instanceof Error ? error.message : error));
       } finally {
         if (!cancelled) setRecentLoading(false);
       }
@@ -100,7 +114,21 @@ function DashboardInner() {
     const duration = searchParams?.get("duration");
     if (company && topic && duration) {
       const dur = parseInt(duration, 10) || 30;
-      setSession({ company, topic, duration: dur, excludeTopics: [] });
+      const excludeParam = searchParams?.get("excludeTopics");
+      let excludeTopics: string[] = [];
+
+      if (excludeParam) {
+        try {
+          const parsed = JSON.parse(excludeParam);
+          if (Array.isArray(parsed)) {
+            excludeTopics = parsed.filter((value): value is string => typeof value === "string");
+          }
+        } catch (error) {
+          console.warn("Failed to parse excludeTopics query param", error);
+        }
+      }
+
+      setSession({ company, topic, duration: dur, excludeTopics });
     }
   }, [searchParams]);
 

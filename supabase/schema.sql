@@ -105,12 +105,12 @@ create index if not exists dsa_questions_companies_gin
 
 alter table public.dsa_questions enable row level security;
 
--- Allow authenticated users to read the question bank.
+-- Allow public read access to the question bank and metadata.
 drop policy if exists "dsa_questions_select_authenticated" on public.dsa_questions;
-create policy "dsa_questions_select_authenticated"
+drop policy if exists "dsa_questions_select_public" on public.dsa_questions;
+create policy "dsa_questions_select_public"
   on public.dsa_questions
   for select
-  to authenticated
   using (true);
 
 -- No insert/update/delete policies by default (locked down).
@@ -159,6 +159,46 @@ create policy "interview_session_questions_insert_own"
 -- 4) RPC helper: pick a random question by company, with include/exclude topics.
 -- PostgREST doesn't support `order by random()` directly in a normal select,
 -- so using an RPC keeps the client code simple.
+create or replace function public.get_company_options()
+returns text[]
+language sql
+stable
+as $$
+  select coalesce(
+    array_agg(company order by company),
+    '{}'::text[]
+  )
+  from (
+    select distinct u.company
+    from public.dsa_questions q
+    cross join lateral unnest(q.companies) as u(company)
+    where u.company is not null
+      and u.company <> ''
+  ) companies;
+$$;
+
+grant execute on function public.get_company_options() to anon, authenticated;
+
+create or replace function public.get_topic_options()
+returns text[]
+language sql
+stable
+as $$
+  select coalesce(
+    array_agg(topic order by topic),
+    '{}'::text[]
+  )
+  from (
+    select distinct u.topic
+    from public.dsa_questions q
+    cross join lateral unnest(q.topics) as u(topic)
+    where u.topic is not null
+      and u.topic <> ''
+  ) topics;
+$$;
+
+grant execute on function public.get_topic_options() to anon, authenticated;
+
 create or replace function public.pick_random_dsa_question(
   p_company text,
   p_include_topics text[] default null,

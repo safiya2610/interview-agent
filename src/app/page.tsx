@@ -121,20 +121,24 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
-    setIsMounted(true);
+    const frame = requestAnimationFrame(() => setIsMounted(true));
     function onOpen() {
       setModalOpen(true);
     }
     window.addEventListener("openSetupModal", onOpen as EventListener);
-    return () => window.removeEventListener("openSetupModal", onOpen as EventListener);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("openSetupModal", onOpen as EventListener);
+    };
   }, []);
 
-  function handleStart(opts: { company: string; topic: string; duration: number }) {
+  function handleStart(opts: { company: string; topic: string; duration: number; excludeTopics: string[] }) {
     // navigate to dashboard with params so the dashboard can start the session
     const q = new URLSearchParams();
     q.set("company", opts.company);
     q.set("topic", opts.topic);
     q.set("duration", String(opts.duration));
+    q.set("excludeTopics", JSON.stringify(opts.excludeTopics));
     router.push(`/dashboard?${q.toString()}`);
   }
 
