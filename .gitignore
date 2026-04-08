@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ETL data (large generated files — seed via scripts/seed-dsa.mjs instead)
+/data/

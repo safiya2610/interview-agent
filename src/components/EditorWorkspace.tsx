@@ -118,8 +118,8 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     setUnlocked(false);
     setMessages([]);
     setInterviewState("intro");
-    setCurrentQuestion(FIXED_THREE_SUM_QUESTION);
-    setTestCases(getDefaultThreeSumTestCases());
+    setCurrentQuestion(null);
+    setTestCases([]);
     setCurrentTestIndex(0);
     setTestResults([]);
     setSubmissionStatus(null);
@@ -232,6 +232,32 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
 
         if (error) throw error;
         if (!cancelled) sessionIdRef.current = (data as any)?.id ?? stableId;
+
+        // Fetch custom PYQ in background
+        const { data: qData, error: qErr } = await supabase.rpc('pick_random_dsa_question', {
+          p_company: company === 'Generic' ? null : company,
+          p_exclude_topics: excludeTopics && excludeTopics.length > 0 ? excludeTopics : null,
+          p_session_id: stableId
+        });
+
+        if (!cancelled) {
+          if (!qErr && qData) {
+            setCurrentQuestion(qData);
+            setTestCases((qData.examples && Array.isArray(qData.examples)) ? qData.examples.map((ex: any) => ({
+              input: String(ex.input ?? ""),
+              expected: String(ex.output ?? ex.expected ?? ""),
+              custom: false
+            })) : []);
+            
+            // Setup the initial IDE editor value with a nice comment
+            const header = `// -----------------------------------------------------\n// Company: ${company !== 'Generic' ? company : 'Any'}\n// Topic: ${topic}\n// Problem: ${qData.title}\n// -----------------------------------------------------\n\n`;
+            setEditorValue(`${header}class Solution {\npublic:\n    // Implement your solution here\n    \n};\n`);
+          } else {
+            setCurrentQuestion(FIXED_THREE_SUM_QUESTION);
+            setTestCases(getDefaultThreeSumTestCases());
+            console.warn("Falling back to fixed question, fetch failed:", qErr);
+          }
+        }
       } catch (e) {
         console.warn("Failed to create interview session row", e);
       }
@@ -335,6 +361,7 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     setAgentText("Analyzing approach... Logic seems sound. Unlocking editor.");
     setListening(false);
     setTimeout(() => {
+      setInterviewState('coding');
       setUnlocked(true);
       setAgentText(`Editor unlocked. You have ${duration} minutes to implement the solution.`);
       editorRef.current?.focus();
@@ -590,9 +617,12 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
           </div>
 
           <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
-            <div className="mb-4">
-              <span className="text-xs font-bold text-green-400 bg-green-400/10 px-2 py-1 rounded">{currentQuestion?.difficulty || "Loading..."}</span>
-              <span className="text-xs font-bold text-slate-400 ml-2">{topic}</span>
+            <div className="mb-4 flex items-center gap-2">
+              <span className={`text-xs font-bold px-2 py-1 rounded ${currentQuestion?.difficulty === 'Hard' ? 'text-red-400 bg-red-400/10' : currentQuestion?.difficulty === 'Medium' ? 'text-yellow-400 bg-yellow-400/10' : 'text-green-400 bg-green-400/10'}`}>{currentQuestion?.difficulty || "Loading..."}</span>
+              {company && company !== "Generic" && (
+                <span className="text-xs font-bold text-blue-400 bg-blue-400/10 px-2 py-1 rounded">{company}</span>
+              )}
+              <span className="text-xs font-bold text-slate-400 ml-1">{topic}</span>
             </div>
             {(excludeTopics ?? []).length > 0 && (
               <div className="mb-4">
@@ -607,11 +637,17 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
               </div>
             )}
 
-            {currentQuestion ? (
+            {interviewState === 'intro' ? (
+              <div className="flex flex-col items-center justify-center h-64 text-slate-500 animate-pulse bg-slate-800/20 rounded-xl border border-white/5 p-8 mt-12">
+                <svg className="w-12 h-12 mb-4 text-blue-500/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
+                <p className="text-sm font-semibold text-slate-300">Preparing Custom Interview Scenario...</p>
+                <p className="text-xs mt-2 text-slate-500 text-center max-w-xs">Question will be presented automatically when the introduction phase completes.</p>
+              </div>
+            ) : currentQuestion ? (
               <>
                 <h2 className="text-xl font-bold mb-4">{currentQuestion.title}</h2>
                 <div className="prose prose-invert prose-sm text-slate-300">
-                  <p>{currentQuestion.description || currentQuestion.prompt}</p>
+                  <div className="leetcode-html-content" dangerouslySetInnerHTML={{ __html: currentQuestion.prompt || currentQuestion.description }} />
 
                   {currentQuestion.examples && Array.isArray(currentQuestion.examples) && currentQuestion.examples.map((ex: any, i: number) => (
                     <div key={i} className="bg-slate-800/50 p-4 rounded-lg border border-white/5 my-4">

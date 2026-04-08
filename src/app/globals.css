@@ -577,3 +577,44 @@ body { font-family: 'Inter', sans-serif; background-color: var(--bg-deep); color
   }
 }
 
+/* LeetCode Custom Question Content Formatting */
+.leetcode-html-content {
+  color: #cbd5f5;
+  line-height: 1.6;
+}
+.leetcode-html-content p {
+  margin-bottom: 1rem;
+}
+.leetcode-html-content code {
+  background-color: rgba(30, 41, 59, 0.8);
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.85em;
+  color: #93c5fd;
+}
+.leetcode-html-content pre {
+  background-color: rgba(15, 23, 42, 0.8);
+  padding: 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  margin: 1rem 0;
+}
+.leetcode-html-content pre code {
+  background-color: transparent;
+  padding: 0;
+  color: #e2e8f0;
+}
+.leetcode-html-content ul, .leetcode-html-content ol {
+  margin-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+.leetcode-html-content li {
+  margin-bottom: 0.5rem;
+}
+.leetcode-html-content strong, .leetcode-html-content b {
+  color: #ffffff;
+  font-weight: 600;
+}
+

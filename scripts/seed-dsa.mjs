@@ -29,10 +29,10 @@ function normalizeJson(value, fallback) {
 }
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl) die("Missing env var NEXT_PUBLIC_SUPABASE_URL");
-if (!supabaseAnonKey) die("Missing env var NEXT_PUBLIC_SUPABASE_ANON_KEY");
+if (!supabaseKey) die("Missing env var SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY");
 
 const fileArg = process.argv[2];
 if (!fileArg) {
@@ -55,7 +55,7 @@ try {
 const rows = Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : null;
 if (!rows) die("JSON must be an array of question objects, or { data: [...] }");
 
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 const mapped = rows.map((r) => {
   const title = r.title ?? r.name ?? r.question ?? r.problem;
