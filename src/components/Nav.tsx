@@ -15,6 +15,7 @@ export default function Nav() {
     let mounted = true;
 
     async function load() {
+      if (!supabase) return;
       const { data } = await supabase!.auth.getSession();
       if (!mounted) return;
       setUser(data.session?.user ?? null);
@@ -22,13 +23,17 @@ export default function Nav() {
 
     load();
 
-    const { data: listener } = supabase!.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
+    let listener: any = null;
+    if (supabase) {
+      const { data } = supabase!.auth.onAuthStateChange((_event, session) => {
+        setUser(session?.user ?? null);
+      });
+      listener = data;
+    }
 
     return () => {
       mounted = false;
-      listener.subscription.unsubscribe();
+      listener?.subscription.unsubscribe();
     };
   }, []);
 

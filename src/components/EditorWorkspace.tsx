@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import EyeTracker from "./EyeTracker";
 
 const ACTIVE_SESSION_STORAGE_KEY = "interview_agent_active_session_v1";
 
@@ -110,6 +111,7 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
   const preRef = useRef<HTMLElement | null>(null);
   const gutterRef = useRef<HTMLDivElement | null>(null);
   const GUTTER_WIDTH = 56;
+  const [showEyeWarning, setShowEyeWarning] = useState(false);
 
   const excludeKey = (excludeTopics ?? []).filter(Boolean).join(",");
   const interviewKey = `${company}__${topic}__${duration}__${excludeKey}`;
@@ -731,6 +733,24 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
 
   return (
     <div className="h-screen flex overflow-hidden relative">
+      {/* Eye Tracker & Warning */}
+      {!showEyeWarning && (
+        <EyeTracker onLookAway={() => setShowEyeWarning(true)} lookAwayThresholdMs={4000} />
+      )}
+
+      {showEyeWarning && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-4 bg-red-900/40 border border-red-500/50 px-6 py-4 rounded-xl shadow-2xl shadow-red-500/20 backdrop-blur-md animate-enter">
+          <svg className="w-6 h-6 text-red-500 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+          <div>
+            <h2 className="text-sm font-bold text-white">Attention Required</h2>
+            <p className="text-xs text-slate-300">Please keep your eyes on the screen.</p>
+          </div>
+          <button onClick={() => setShowEyeWarning(false)} className="ml-4 px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-full transition shadow-lg shadow-red-600/30">
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Header controls (timer + end session) moved into main header for alignment */}
 
       <div className="flex-1 flex overflow-hidden">

@@ -129,6 +129,10 @@ export default function Hero() {
 
   async function handleStart() {
     try {
+      if (!supabase) {
+        dispatchToggle("signup");
+        return;
+      }
       const { data } = await supabase!.auth.getSession();
       const user = data.session?.user ?? null;
       if (!user) {
@@ -146,6 +150,10 @@ export default function Hero() {
 
   async function handleViewBank() {
     try {
+      if (!supabase) {
+        dispatchToggle("login");
+        return;
+      }
       const { data } = await supabase!.auth.getSession();
       const user = data.session?.user ?? null;
       if (!user) {
