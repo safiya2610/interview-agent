@@ -83,8 +83,13 @@ export async function runCodeInSandbox(opts: { code: string; language: string; s
     }
 
     if (/java/i.test(language)) {
-      // Expect user code to have a class `Main` or adapt
-      const source = path.join(tmp, "Main.java");
+      let className = "Solution";
+      const match = code.match(/public\s+class\s+(\w+)/);
+      if (match) {
+        className = match[1];
+      }
+
+      const source = path.join(tmp, `${className}.java`);
       fs.writeFileSync(source, code, "utf8");
       const javac = spawnSync("javac", [source], { encoding: "utf8", timeout: timeoutMs });
       if (javac.error && (javac.error as any).code === "ENOENT") {
@@ -95,7 +100,7 @@ export async function runCodeInSandbox(opts: { code: string; language: string; s
         const diagnostics = parseJavacDiagnostics(compileStderr);
         return { ok: false, compileStderr, diagnostics };
       }
-      const run = spawnSync("java", ["-cp", tmp, "Main"], { encoding: "utf8", timeout: timeoutMs, input: opts.stdin ?? undefined });
+      const run = spawnSync("java", ["-cp", tmp, className], { encoding: "utf8", timeout: timeoutMs, input: opts.stdin ?? undefined });
       const runStderr = run.stderr ?? "";
       const runStdout = run.stdout ?? "";
       const diagnostics = runStderr ? parseJavacDiagnostics(runStderr) : [];

@@ -4,10 +4,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
 type Stats = {
-  totalSessions30d: number;
+  totalSessions: number;
   sessionsThisWeek: number;
-  avgAgentScore30d: number | null;
-  timePracticedSeconds30d: number;
+  avgAgentScore: number | null;
+  timePracticedSeconds: number;
 };
 
 type Props = {
@@ -35,18 +35,13 @@ export default function StatsGrid({ onStartNew }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats>({
-    totalSessions30d: 0,
+    totalSessions: 0,
     sessionsThisWeek: 0,
-    avgAgentScore30d: null,
-    timePracticedSeconds30d: 0,
+    avgAgentScore: null,
+    timePracticedSeconds: 0,
   });
 
   const now = useMemo(() => new Date(), []);
-  const since30d = useMemo(() => {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 30);
-    return d.toISOString();
-  }, [now]);
   const sinceWeek = useMemo(() => startOfWeekISO(now), [now]);
 
   useEffect(() => {
@@ -63,7 +58,7 @@ export default function StatsGrid({ onStartNew }: Props) {
         const userId = userRes.user?.id;
         if (!userId) {
           if (!cancelled) {
-            setStats({ totalSessions30d: 0, sessionsThisWeek: 0, avgAgentScore30d: null, timePracticedSeconds30d: 0 });
+            setStats({ totalSessions: 0, sessionsThisWeek: 0, avgAgentScore: null, timePracticedSeconds: 0 });
             setLoading(false);
           }
           return;
@@ -72,26 +67,25 @@ export default function StatsGrid({ onStartNew }: Props) {
         const { data: rows, error: rowsErr } = await supabase
           .from("interview_sessions")
           .select("created_at, elapsed_seconds, agent_score")
-          .eq("user_id", userId)
-          .gte("created_at", since30d);
+          .eq("user_id", userId);
 
         if (rowsErr) throw rowsErr;
 
-        const totalSessions30d = rows?.length ?? 0;
+        const totalSessions = rows?.length ?? 0;
         const sessionsThisWeek = (rows ?? []).filter((r) => (r as any)?.created_at >= sinceWeek).length;
 
         const scored = (rows ?? [])
           .map((r) => (r as any)?.agent_score)
           .filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
-        const avgAgentScore30d = scored.length ? scored.reduce((a, b) => a + b, 0) / scored.length : null;
+        const avgAgentScore = scored.length ? scored.reduce((a, b) => a + b, 0) / scored.length : null;
 
-        const timePracticedSeconds30d = (rows ?? [])
+        const timePracticedSeconds = (rows ?? [])
           .map((r) => Number((r as any)?.elapsed_seconds ?? 0))
           .filter((v) => Number.isFinite(v) && v > 0)
           .reduce((a, b) => a + b, 0);
 
         if (!cancelled) {
-          setStats({ totalSessions30d, sessionsThisWeek, avgAgentScore30d, timePracticedSeconds30d });
+          setStats({ totalSessions, sessionsThisWeek, avgAgentScore, timePracticedSeconds });
           setLoading(false);
         }
       } catch (e: any) {
@@ -106,24 +100,24 @@ export default function StatsGrid({ onStartNew }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [since30d, sinceWeek]);
+  }, [sinceWeek]);
 
-  const { hours, minutes } = useMemo(() => formatDuration(stats.timePracticedSeconds30d), [stats.timePracticedSeconds30d]);
+  const { hours, minutes } = useMemo(() => formatDuration(stats.timePracticedSeconds), [stats.timePracticedSeconds]);
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
       <div className="glass-card p-6 rounded-2xl">
         <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Total Sessions</div>
-        <div className="text-3xl font-bold text-white">{loading ? "…" : stats.totalSessions30d}</div>
+        <div className="text-3xl font-bold text-white">{loading ? "…" : stats.totalSessions}</div>
         <div className="text-green-400 text-xs mt-2 flex items-center gap-1">{loading ? "" : `+${stats.sessionsThisWeek} this week`}</div>
       </div>
       <div className="glass-card p-6 rounded-2xl">
         <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Avg. Agent Score</div>
         <div className="text-3xl font-bold text-white">
-          {loading ? "…" : stats.avgAgentScore30d == null ? "—" : stats.avgAgentScore30d.toFixed(1)}
+          {loading ? "…" : stats.avgAgentScore == null ? "—" : stats.avgAgentScore.toFixed(1)}
           <span className="text-lg text-slate-500">/10</span>
         </div>
-        <div className="text-blue-400 text-xs mt-2">{loading ? "" : stats.avgAgentScore30d == null ? "No scored sessions yet" : "Based on last 30 days"}</div>
+        <div className="text-blue-400 text-xs mt-2">{loading ? "" : stats.avgAgentScore == null ? "No scored sessions yet" : "All time"}</div>
       </div>
       <div className="glass-card p-6 rounded-2xl">
         <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Time Practiced</div>

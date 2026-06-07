@@ -171,7 +171,7 @@ function DashboardInner() {
           <div className="mb-10 flex flex-col md:flex-row justify-between items-end gap-4">
             <div>
               <h1 className="text-3xl font-bold text-white mb-2">{displayName ? `Welcome back, ${displayName}` : 'Welcome back'}</h1>
-              <p className="text-slate-400">Your AI preparation stats for the last 30 days.</p>
+              <p className="text-slate-400">Your interview preparation stats and history.</p>
             </div>
             <div className="flex gap-2">
               <span className="px-3 py-1 bg-green-500/10 border border-green-500/20 text-green-400 text-xs font-bold rounded-full">Become the ideal candidate.</span>
@@ -198,14 +198,21 @@ function DashboardInner() {
               ) : (
                 <div className="space-y-3">
                   {recentSessions.map((s) => (
-                    <div key={s.id} className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold text-white truncate">{s.company} • {s.topic}</div>
-                        <div className="text-xs text-slate-400">{new Date(s.created_at).toLocaleString()}</div>
+                    <div key={s.id} className="flex flex-col gap-3 rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-white truncate">{s.company} • {s.topic}</div>
+                          <div className="text-xs text-slate-400">{new Date(s.created_at).toLocaleString()}</div>
+                        </div>
+                        <div className="flex items-center gap-4 shrink-0">
+                          <div className="text-xs text-slate-300">{formatMinutes(s.elapsed_seconds)} / {s.duration_minutes}m</div>
+                          <div className="text-xs font-bold text-blue-300">Score: {s.agent_score ?? 8}</div>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-4 shrink-0">
-                        <div className="text-xs text-slate-300">{formatMinutes(s.elapsed_seconds)} / {s.duration_minutes}m</div>
-                        <div className="text-xs font-bold text-blue-300">Score: {s.agent_score ?? 8}</div>
+                      <div className="flex items-center justify-end gap-3">
+                        <Link href={`/dashboard/sessions/${s.id}/feedback`} className="text-xs font-semibold text-indigo-400 hover:text-indigo-300">
+                          View Feedback
+                        </Link>
                       </div>
                     </div>
                   ))}
