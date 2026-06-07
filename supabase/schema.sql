@@ -21,7 +21,7 @@ create table if not exists public.interview_sessions (
   created_at timestamptz not null default now()
 );
 
--- Add topic include/exclude arrays (safe for already-existing tables).
+
 alter table public.interview_sessions
   add column if not exists include_topics text[] not null default '{}'::text[];
 
@@ -155,8 +155,56 @@ create policy "interview_session_questions_insert_own"
     )
   );
 
+-- 4) Interview feedback persisted across sessions
+create table if not exists public.interview_feedback (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null references public.interview_sessions(id) on delete cascade,
+  user_id uuid null,
+  overall_score int not null,
+  score int not null,
+  introduction_score int not null,
+  approach_score int not null,
+  coding_score int not null,
+  communication_score int not null,
+  time_complexity_accuracy int not null,
+  space_complexity_accuracy int not null,
+  time_complexity text,
+  space_complexity text,
+  justification text not null,
+  gaps_identified text[] not null default '{}'::text[],
+  strengths text[] not null default '{}'::text[],
+  suggested_followup text,
+  full_feedback jsonb not null,
+  created_at timestamptz not null default now()
+);
 
--- 4) RPC helper: pick a random question by company, with include/exclude topics.
+create index if not exists interview_feedback_session_idx
+  on public.interview_feedback (session_id);
+
+alter table public.interview_feedback enable row level security;
+
+drop policy if exists "interview_feedback_select_own" on public.interview_feedback;
+create policy "interview_feedback_select_own"
+  on public.interview_feedback
+  for select
+  using (
+    user_id = auth.uid()
+    or exists (
+      select 1
+      from public.interview_sessions s
+      where s.id = interview_feedback.session_id
+        and s.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "interview_feedback_insert_own" on public.interview_feedback;
+create policy "interview_feedback_insert_own"
+  on public.interview_feedback
+  for insert
+  with check (user_id = auth.uid() or user_id is null);
+
+
+-- 5) RPC helper: pick a random question by company, with include/exclude topics.
 -- PostgREST doesn't support `order by random()` directly in a normal select,
 -- so using an RPC keeps the client code simple.
 create or replace function public.get_company_options()

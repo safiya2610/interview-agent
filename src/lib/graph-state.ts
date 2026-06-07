@@ -100,6 +100,9 @@ export interface InterviewGraphState {
 
   /** Structured approach evaluation (set by evaluate_approach node) */
   approachEval: ApproachEvaluation | null;
+
+  /** ID of the stored feedback record (set after interview ends + feedback generated) */
+  feedbackId: string | null;
 }
 
 /* ── Factory: creates a blank initial state ──────────────────── */
@@ -130,5 +133,6 @@ export function createInitialState(config: {
     shouldFetchQuestion: false,
     newQuestion: null,
     approachEval: null,
+    feedbackId: null,
   };
 }
