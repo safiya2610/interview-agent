@@ -1,10 +1,29 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+/**
+ * /api/agent — LangGraph Interview Agent Endpoint
+ * ────────────────────────────────────────────────
+ * Receives the current graph state + user input from the client,
+ * runs one step of the interview graph, and returns the new state.
+ *
+ * The route also handles question fetching from Supabase when
+ * a node requests it (shouldFetchQuestion).
+ */
+
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { createInterviewGraph } from "../../../lib/interview-graph";
+import { createInitialState } from "../../../lib/graph-state";
+import type { InterviewGraphState } from "../../../lib/graph-state";
 
-function getUpstreamStatus(err: any): number | undefined {
-  const status = err?.status ?? err?.response?.status;
-  return typeof status === "number" ? status : undefined;
+/* ── Supabase client (server-side) ─────────────────────────────────── */
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+);
+
+/* ── Helpers ───────────────────────────────────────────────────────── */
+
+function isDev() {
+  return process.env.NODE_ENV !== "production";
 }
 
 function safeErrorMessage(err: any): string {
@@ -12,265 +31,202 @@ function safeErrorMessage(err: any): string {
   return typeof msg === "string" ? msg : "Unknown error";
 }
 
-function isDev() {
-  return process.env.NODE_ENV !== "production";
+function getUpstreamStatus(err: any): number | undefined {
+  const status = err?.status ?? err?.response?.status;
+  return typeof status === "number" ? status : undefined;
 }
 
-// Initialize Supabase (Server-side)
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
-);
+/**
+ * Fetch a random DSA question from Supabase, avoiding previously asked
+ * questions in this session.
+ */
+async function fetchQuestion(
+  company: string,
+  excludeTopics: string[],
+  sessionId?: string
+) {
+  const { data, error } = await supabase.rpc("pick_random_dsa_question", {
+    p_company: company === "Generic" ? null : company,
+    p_exclude_topics:
+      excludeTopics && excludeTopics.length > 0 ? excludeTopics : null,
+    p_session_id: sessionId || null,
+  });
+
+  if (error) {
+    console.warn("Question fetch error:", error);
+    return null;
+  }
+
+  // Handle array or single-object return
+  const q = Array.isArray(data) ? data[0] : data;
+  return q ?? null;
+}
+
+/* ── POST handler ──────────────────────────────────────────────────── */
 
 export async function POST(req: Request) {
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
+    /* ── Validate API key ─────────────────────────────────────────── */
+    if (!process.env.GEMINI_API_KEY) {
       return NextResponse.json(
         {
           error: "Server misconfigured",
           detail: "GEMINI_API_KEY is missing",
-          hint: "Add GEMINI_API_KEY to interview-agent/.env (or .env.local) and restart the dev server.",
+          hint: "Add GEMINI_API_KEY to .env and restart the dev server.",
         },
         { status: 500 }
       );
     }
 
+    /* ── Parse body ────────────────────────────────────────────────── */
     let body: any;
     try {
       body = await req.json();
-    } catch (e) {
+    } catch {
       return NextResponse.json(
-        {
-          error: "Invalid JSON body",
-          detail: "Request body must be valid JSON with Content-Type: application/json",
-        },
+        { error: "Invalid JSON body" },
         { status: 400 }
       );
     }
 
-    const { messages, state, currentQuestion, code, company, topic, difficulty, excludeTopics } = body ?? {};
+    const {
+      graphState: clientState,
+      userInput,
+      userCode,
+      timeRemainingSeconds,
+      // Legacy / initial-call fields
+      company,
+      topic,
+      excludeTopics,
+      sessionId,
+      duration,
+    } = body ?? {};
 
-    // 1. Construct the prompt based on state
-    // We strictly follow the user's request:
-    // - "It will take the question from the quesion bank from supabase" (Handled in Step 3)
-    // - "paste the question from the database... below the mic" (Handled by UI state)
-    // - "agent will read ques" (Instructed here)
-    // - "ask the logic" -> "speak logic if correct then agent asks to code" (Approach Phase)
-    // - "agent should monitor that and when code completed or if stuck give hint than check" (Coding Phase)
+    /* ── Build or restore the graph state ──────────────────────────── */
+    let state: InterviewGraphState;
 
-    let systemInstruction = `
-      You are an expert technical interviewer for a software engineering role at ${company || "a top tech company"}.
-      Your goal is to assess the candidate's problem-solving skills, coding ability, and communication.
-      
-      Current Interview Phase: ${state}
-      Current Question: ${currentQuestion ? `${currentQuestion.title}: ${currentQuestion.description}` : "None selected yet."}
-      
-      Candidate's Code (Live Editor Content):
-      \`\`\`
-      ${code || "// No code yet"}
-      \`\`\`
-
-      Phases & Transitions:
-      1. 'intro': 
-         - Ask the candidate to introduce themselves.
-         - Once they are done, transition to 'approach'. 
-         - **Crucial**: When moving to 'approach', set "shouldFetchQuestion": true in the output JSON. **Do NOT generate the question text yourself.** Just say: "I have selected a problem for you. Please read it and explain your approach." The system will append the actual problem text to your message.
-      
-      2. 'approach': 
-         - The candidate has the question. 
-         - Ask them to **explain their logic/approach** first. Do NOT let them code yet.
-         - If they are silent or ask for the question again, repeat the problem summary.
-         - Evaluate their verbal logic.
-           - If flawed: Give a conceptual hint.
-           - If correct/optimal: Tell them "That sounds like a great plan. Please proceed to the coding editor." and transition internal state to 'coding'.
-      
-      3. 'coding': 
-         - The candidate is now writing code (see "Candidate's Code" above).
-         - **Monitor**: Check the code they are writing in real-time.
-         - **Stuck?**: If they seem stuck or ask for help, provide a small syntax or logic hint (don't write the code for them).
-         - **Completed?**: If they say they are finished, or the code looks complete and correct, analyze it.
-           - If correct: "Great job! The code looks correct." -> transition to 'finished'.
-           - If buggy: Point out the edge case or bug without being too harsh. Ask them to fix it.
-      
-      4. 'finished':
-         - Wrap up the interview. Give brief feedback on their performance.
-
-      Output strictly in JSON format. Do not use Markdown backticks.
-      {
-        "message": "Your response to the candidate.",
-        "nextState": "The next state (intro, approach, coding, finished).",
-        "shouldFetchQuestion": boolean (true ONLY if transitioning from 'intro' to 'approach' OR if currently in 'approach' but no question is assigned yet)
-      }
-    `;
-
-   
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const preferredModel = process.env.GEMINI_MODEL;
-    const modelCandidates = [
-      preferredModel,
-      "gemini-2.0-flash", 
-      "gemini-1.5-flash",
-      "gemini-1.5-pro",
-      "gemini-flash-lite-latest",
-      "gemini-flash-latest",
-      "gemini-pro-latest",
-    ].filter(Boolean) as string[];
-
-    let responseText: string | null = null;
-    let lastErr: any = null;
-
-    for (const modelName of modelCandidates) {
-      try {
-        const model = genAI.getGenerativeModel({
-          model: modelName,
-          generationConfig: { 
-             responseMimeType: "application/json" 
-          },
-        });
-
-       
-        let safeHistory = (messages ?? []).map((m: any) => ({
-            role: m.role === "user" ? "user" : "model",
-            parts: [{ text: m.content }],
-        }));
-
-        if (safeHistory.length > 0 && safeHistory[0].role === "model") {
-             // Inserting a placeholder user message so the conversation is valid [User, Model, User, ...]
-             safeHistory.unshift({
-               role: "user",
-               parts: [{ text: "Hello" }]
-             });
-        }
-
-        const chat = model.startChat({
-          history: safeHistory,
-        });
-
-        const result = await chat.sendMessage(systemInstruction);
-        responseText = result.response.text();
-        break;
-      } catch (e: any) {
-        lastErr = e;
-       
-        const status = getUpstreamStatus(e);
-        if (status === 404 || status === 429) continue;
-        break;
-      }
-    }
-
-    if (!responseText) {
-      const status = getUpstreamStatus(lastErr);
-      const msg = safeErrorMessage(lastErr);
-      if (status === 429) {
-        return NextResponse.json(
-          {
-            error: "Gemini quota exceeded",
-            detail: msg,
-            retryAfterSeconds: 60,
-            hint: "Open https://ai.dev/usage?tab=rate-limit and ensure this project has non-zero free-tier quota (or enable billing).",
-          },
-          { status: 429 }
-        );
-      }
-
-      if (status === 401 || status === 403) {
-        return NextResponse.json(
-          {
-            error: "Gemini auth failed",
-            detail: msg,
-            hint: "Check that the API key is valid and not restricted to browser referrers. For server-side use, avoid HTTP-referrer restrictions.",
-          },
-          { status }
-        );
-      }
-
-      return NextResponse.json(
-        {
-          error: "Gemini request failed",
-          detail: msg,
-          ...(isDev()
-            ? {
-                debug: {
-                  upstreamStatus: status ?? null,
-                  modelCandidates,
-                },
-              }
-            : null),
-        },
-        { status: typeof status === "number" ? status : 502 }
-      );
-    }
-
-    let parsedResponse;
-    
-    try {
-      parsedResponse = JSON.parse(responseText);
-    } catch (e) {
-      console.error("Failed to parse JSON from Gemini", responseText);
-      return NextResponse.json(
-        {
-          error: "AI response error",
-          detail: "Model returned non-JSON output",
-          ...(isDev() ? { debug: { raw: responseText.slice(0, 2000) } } : null),
-        },
-        { status: 502 }
-      );
-    }
-
-    let { message, nextState, shouldFetchQuestion } = parsedResponse;
-    let newQuestion = null;
-
-    // 3. Handle State Transitions & Data Fetching
-    if (shouldFetchQuestion || (nextState === 'approach' && !currentQuestion)) {
-      
-      const ignoreTopicFilter = true; 
-      
-      const { data, error } = await supabase.rpc('pick_random_dsa_question', {
-        p_company: company,
-        p_difficulty: difficulty,
-        // If user wants to ignore topic selection to get broad company questions, pass [].
-        // If topic is critical, pass [topic].
-        // based on "it should not have the topic selected", we pass [].
-        p_include_topics: (ignoreTopicFilter || !topic) ? [] : [topic],
-        p_exclude_topics: excludeTopics ?? []
+    if (clientState && typeof clientState === "object" && clientState.phase) {
+      // Existing session — restore state from client
+      state = clientState as InterviewGraphState;
+      // Always update live fields from the client
+      if (typeof userCode === "string") state.userCode = userCode;
+      if (typeof timeRemainingSeconds === "number")
+        state.timeRemainingSeconds = timeRemainingSeconds;
+    } else {
+      // First call — create initial state
+      state = createInitialState({
+        company: company || "Generic",
+        topic: topic || "DSA",
+        excludeTopics: excludeTopics || [],
+        sessionId: sessionId || "",
+        timeRemainingSeconds:
+          typeof timeRemainingSeconds === "number"
+            ? timeRemainingSeconds
+            : (duration || 45) * 60,
       });
+    }
 
-      if (data) {
-        // Handle array return from RPC (some postgrest setups return single obj in array for rpc)
-        const q = Array.isArray(data) ? data[0] : data;
-        if (q) {
-            newQuestion = q;
-            const descLower = (q.description || q.prompt || "").toLowerCase();
-            // If the prompt is just "null" string or very short, fallback or warn
-            const hasValidDesc = descLower.length > 5 && descLower !== "null";
-            const textToAppend = hasValidDesc ? (q.description || q.prompt) : "(Description not available)";
+    /* ── Run one step of the graph ─────────────────────────────────── */
+    const graph = createInterviewGraph();
+    let newState = await graph.step(state, userInput || "");
 
-             message += `\n\n**New Question Assigned: ${q.title}**\n\n${textToAppend}`;
-        } else {
-             console.warn("RPC returned valid data structure but empty/null inside?", data);
-             message += `\n\n(System Error: Database returned empty question result.)`;
+    /* ── Handle question fetching ──────────────────────────────────── */
+    if (newState.shouldFetchQuestion) {
+      const question = await fetchQuestion(
+        newState.company,
+        newState.excludeTopics,
+        newState.sessionId
+      );
+
+      if (question) {
+        newState.currentQuestion = question;
+        newState.newQuestion = question;
+        newState.shouldFetchQuestion = false;
+
+        // Now auto-run the present_question node since we have the question
+        if (newState.phase === "present_question") {
+          const previousSpeech = newState.aiSpeechText; // Save intro acknowledgment
+          newState = await graph.step(newState, "");
+          // Combine speech: intro acknowledgment + question presentation
+          if (previousSpeech && newState.aiSpeechText) {
+            newState.aiSpeechText = previousSpeech + " " + newState.aiSpeechText;
+          }
         }
       } else {
-        console.warn("No question found", error);
-        message += "\n\n(System: Could not fetch a question. Please check the database.)";
+        // Fallback question
+        newState.currentQuestion = {
+          title: "3Sum",
+          description:
+            'Given an integer array nums, return all the triplets [nums[i], nums[j], nums[k]] such that i != j, i != k, and j != k, and nums[i] + nums[j] + nums[k] == 0. The solution set must not contain duplicate triplets.',
+          examples: [
+            { input: "6\n-1 0 1 2 -1 -4", output: "-1 -1 2\n-1 0 1" },
+            { input: "3\n0 1 1", output: "[]" },
+            { input: "5\n0 0 0 0 0", output: "0 0 0" },
+          ],
+          difficulty: "Medium",
+          prompt:
+            "Given an integer array nums, return all unique triplets whose sum is 0.",
+        };
+        newState.newQuestion = newState.currentQuestion;
+        newState.shouldFetchQuestion = false;
+
+        if (newState.phase === "present_question") {
+          const previousSpeech = newState.aiSpeechText;
+          newState = await graph.step(newState, "");
+          if (previousSpeech && newState.aiSpeechText) {
+            newState.aiSpeechText = previousSpeech + " " + newState.aiSpeechText;
+          }
+        }
       }
     }
 
+    /* ── Return the new state to the client ────────────────────────── */
     return NextResponse.json({
-      message,
-      nextState,
-      newQuestion
+      graphState: newState,
+      // Convenience fields for the frontend
+      aiSpeechText: newState.aiSpeechText,
+      aiStatusText: newState.aiStatusText,
+      shouldSpeak: newState.shouldSpeak,
+      phase: newState.phase,
+      editorUnlocked: newState.editorUnlocked,
+      newQuestion: newState.newQuestion,
+      approachEval: newState.approachEval,
     });
-
-  } catch (error) {
+  } catch (error: any) {
     console.error("Agent API Error:", error);
+
+    const status = getUpstreamStatus(error);
+    const msg = safeErrorMessage(error);
+
+    if (status === 429) {
+      return NextResponse.json(
+        {
+          error: "Gemini quota exceeded",
+          detail: msg,
+          retryAfterSeconds: 60,
+          hint: "Check your Gemini API quota.",
+        },
+        { status: 429 }
+      );
+    }
+
+    if (status === 401 || status === 403) {
+      return NextResponse.json(
+        {
+          error: "Gemini auth failed",
+          detail: msg,
+          hint: "Check that the API key is valid.",
+        },
+        { status: status }
+      );
+    }
+
     return NextResponse.json(
       {
         error: "Internal Server Error",
-        ...(isDev() ? { detail: safeErrorMessage(error) } : null),
+        ...(isDev() ? { detail: msg } : null),
       },
-      { status: 500 }
+      { status: typeof status === "number" ? status : 500 }
     );
   }
 }

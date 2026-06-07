@@ -2,11 +2,11 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import type { InterviewGraphState, InterviewPhase, DSAQuestion } from "../lib/graph-state";
 
 const ACTIVE_SESSION_STORAGE_KEY = "interview_agent_active_session_v1";
 
 function createUuidFallback() {
-  // Not cryptographically strong; only used if crypto.randomUUID is unavailable.
   return `id_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`;
 }
 
@@ -47,7 +47,7 @@ type Props = {
   onEnd?: () => void;
 };
 
-const FIXED_THREE_SUM_QUESTION = {
+const FIXED_THREE_SUM_QUESTION: DSAQuestion = {
   title: "3Sum",
   description:
     'Given an integer array nums, return all the triplets [nums[i], nums[j], nums[k]] such that i != j, i != k, and j != k, and nums[i] + nums[j] + nums[k] == 0. The solution set must not contain duplicate triplets.\n\nInput format for this editor:\n- First line: integer n\n- Second line: n space-separated integers\n\nOutput format for deterministic judging:\n- Print each unique triplet as "a b c" (values inside each triplet in nondecreasing order)\n- Print triplets in lexicographic order, one triplet per line\n- If no triplet exists, print []',
@@ -69,10 +69,24 @@ function getDefaultThreeSumTestCases() {
   }));
 }
 
+/* ── Phase status labels shown in the AI panel ──────────────────────── */
+function getPhaseStatusText(phase: InterviewPhase, customStatus?: string): string {
+  if (customStatus) return customStatus;
+  switch (phase) {
+    case "introduction": return "Introduce yourself to begin...";
+    case "present_question": return "Read the question below";
+    case "evaluate_approach": return "Listening to your approach...";
+    case "coding": return "Code your solution — ask if you need help";
+    case "review_solution": return "Reviewing your solution...";
+    case "check_continue": return "Preparing...";
+    case "end_interview": return "Interview complete";
+    default: return "Connecting...";
+  }
+}
+
 export default function EditorWorkspace({ company, topic, duration, excludeTopics, onEnd }: Props) {
   const [unlocked, setUnlocked] = useState(false);
-  const [agentText, setAgentText] = useState("\"Connecting to session...\"");
-  const [listening, setListening] = useState(false); // Default to false for text input initially
+  const [listening, setListening] = useState(false);
   const [editorValue, setEditorValue] = useState(`// Implement your solution here\n`);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const [timerSeconds, setTimerSeconds] = useState(duration * 60);
@@ -82,12 +96,14 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
   const startedInterviewKeyRef = useRef<string | null>(null);
   const [activeBottomTab, setActiveBottomTab] = useState<"testcase" | "result">("testcase");
   const [submissionStatus, setSubmissionStatus] = useState<"accepted" | "wrong" | "compile" | null>(null);
-  // Agent State
-  const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
-  const [interviewState, setInterviewState] = useState<'intro' | 'approach' | 'coding' | 'finished'>('intro');
+
+  // Graph state (the full state object sent to/from the API)
+  const [graphState, setGraphState] = useState<InterviewGraphState | null>(null);
+  const [currentPhase, setCurrentPhase] = useState<InterviewPhase>("introduction");
+  const [statusText, setStatusText] = useState("Connecting to session...");
   const [currentQuestion, setCurrentQuestion] = useState<any>(null);
-  const [userInput, setUserInput] = useState("");
   const [isAgentLoading, setIsAgentLoading] = useState(false);
+
   const [language, setLanguage] = useState("C++ 17");
   const [consoleVisible, setConsoleVisible] = useState(false);
   const [consoleOutput, setConsoleOutput] = useState<string>("");
@@ -107,6 +123,8 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
   const recognitionRef = useRef<any>(null);
   const [interimTranscript, setInterimTranscript] = useState("");
   const accumulatedTranscriptRef = useRef<string>("");
+  const pendingSendRef = useRef(false);
+  const sendToGraphRef = useRef<(input: string) => void>(() => {});
   const preRef = useRef<HTMLElement | null>(null);
   const gutterRef = useRef<HTMLDivElement | null>(null);
   const GUTTER_WIDTH = 56;
@@ -114,32 +132,31 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
   const excludeKey = (excludeTopics ?? []).filter(Boolean).join(",");
   const interviewKey = `${company}__${topic}__${duration}__${excludeKey}`;
 
+  /* ── Initialize interview ──────────────────────────────────────── */
   useEffect(() => {
-    // Guard against duplicate calls in dev (React StrictMode) and against
-    // parent rerenders that pass a new excludeTopics array instance.
     if (startedInterviewKeyRef.current === interviewKey) return;
     startedInterviewKeyRef.current = interviewKey;
 
     setUnlocked(false);
-    setMessages([]);
-    setInterviewState("intro");
+    setGraphState(null);
+    setCurrentPhase("introduction");
     setCurrentQuestion(null);
     setTestCases([]);
     setCurrentTestIndex(0);
     setTestResults([]);
     setSubmissionStatus(null);
-    setAgentText(`"Connecting to AI Interviewer..."`);
+    setStatusText("Connecting to session...");
 
     void startInterview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interviewKey]);
 
   async function startInterview() {
-    // Send an initial empty message to trigger the agent's greeting
-    await sendMessageToAgent("Hello, I am ready for the interview.", true);
+    // Send initial call to the graph — no user input, triggers introduction node
+    await sendToGraph("");
   }
 
-  // Speech Recognition (STT) Logic
+  /* ── Speech Recognition (STT) ──────────────────────────────────── */
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -147,7 +164,7 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     if (!SpeechRecognition) return;
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = true; // Listen until manually stopped
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-IN";
 
@@ -161,7 +178,7 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
           currentInterim += event.results[i][0].transcript;
         }
       }
-      
+
       if (finalTranscript) {
         accumulatedTranscriptRef.current += " " + finalTranscript;
       }
@@ -170,15 +187,31 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
 
     recognition.onend = () => {
       setListening(false);
+      // When we stopped intentionally (pendingSend), send the accumulated transcript now
+      // — this fires AFTER all final onresult events, so the transcript is complete.
+      if (pendingSendRef.current) {
+        pendingSendRef.current = false;
+        const finalMsg = accumulatedTranscriptRef.current.trim();
+        if (finalMsg) {
+          sendToGraphRef.current(finalMsg);
+        }
+        accumulatedTranscriptRef.current = "";
+        setInterimTranscript("");
+      }
     };
 
     recognition.onerror = (event: any) => {
       console.error("Speech Recognition Error", event.error);
       setListening(false);
+      pendingSendRef.current = false;
     };
 
     recognitionRef.current = recognition;
   }, []);
+
+  // Keep sendToGraphRef always pointing to the latest sendToGraph
+  // so the onend handler (set up once) can call the current version.
+  sendToGraphRef.current = sendToGraph;
 
   const toggleListening = () => {
     if (!recognitionRef.current) {
@@ -187,24 +220,21 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     }
 
     if (listening) {
+      // Mark that we want to send the transcript once recognition fully ends.
+      // recognition.onend fires AFTER the final onresult, so the transcript is complete.
+      pendingSendRef.current = true;
       recognitionRef.current.stop();
-      setListening(false);
-      
-      const finalMsg = accumulatedTranscriptRef.current.trim();
-      if (finalMsg) {
-        sendMessageToAgent(finalMsg);
-      }
-      accumulatedTranscriptRef.current = "";
-      setInterimTranscript("");
+      // Don't read transcript here — onend will handle it.
     } else {
       accumulatedTranscriptRef.current = "";
       setInterimTranscript("");
+      pendingSendRef.current = false;
       setListening(true);
       recognitionRef.current.start();
     }
   };
 
-  // Voice Output (TTS) Logic
+  /* ── Voice Output (TTS) ────────────────────────────────────────── */
   useEffect(() => {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
 
@@ -225,15 +255,19 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
   const speak = (text: string, retryCount = 0) => {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
 
-    // Cancel any ongoing speech
     window.speechSynthesis.cancel();
     setIsAiSpeaking(false);
 
     // Clean markdown or special chars for better speech
-    const cleanText = text.replace(/\*\*/g, "").replace(/#/g, "").replace(/`/g, "").replace(/\[.*?\]/g, "").trim();
+    const cleanText = text
+      .replace(/\*\*/g, "")
+      .replace(/#/g, "")
+      .replace(/`/g, "")
+      .replace(/\[.*?\]/g, "")
+      .replace(/\[Question presented:.*?\]/g, "")
+      .trim();
     if (!cleanText) return;
 
-    // Retry if voices aren't loaded yet
     if (voicesRef.current.length === 0 && retryCount < 5) {
       setTimeout(() => speak(text, retryCount + 1), 200);
       return;
@@ -241,12 +275,10 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
 
     const utterance = new SpeechSynthesisUtterance(cleanText);
     utterance.lang = "en-IN";
-    
-    // Attempt to find a high-quality "premium" Indian voice
+
     const voices = voicesRef.current.length > 0 ? voicesRef.current : window.speechSynthesis.getVoices();
-    
-    // Priority: 1. Natural/Premium Indian, 2. Google Indian, 3. Any Indian, 4. Any English
-    const preferredVoice = 
+
+    const preferredVoice =
       voices.find(v => v.lang.startsWith("en-IN") && (v.name.includes("Natural") || v.name.includes("Premium"))) ||
       voices.find(v => v.lang.startsWith("en-IN") && v.name.includes("Google")) ||
       voices.find(v => v.lang.startsWith("en-IN")) ||
@@ -257,9 +289,8 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
       utterance.voice = preferredVoice;
     }
 
-    // Slightly adjust rate and pitch for a more natural human feel
-    utterance.rate = 0.95; // Slightly slower can feel more deliberate/human
-    utterance.pitch = 1.05; // Slightly higher pitch often sounds clearer/less robotic
+    utterance.rate = 0.95;
+    utterance.pitch = 1.05;
     utterance.volume = 1.0;
 
     utterance.onstart = () => setIsAiSpeaking(true);
@@ -269,70 +300,112 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     window.speechSynthesis.speak(utterance);
   };
 
-  async function sendMessageToAgent(content: string, isSystemInit = false) {
-    if (!content.trim()) return;
-
+  /* ── Send message to graph API ─────────────────────────────────── */
+  async function sendToGraph(userInput: string) {
     setIsAgentLoading(true);
-    const newMessages = isSystemInit ? [] : [...messages, { role: 'user', content }];
-    setMessages(newMessages);
-    if (!isSystemInit) setUserInput("");
 
     try {
       const res = await fetch('/api/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: newMessages,
-          state: interviewState,
-          currentQuestion: currentQuestion ?? FIXED_THREE_SUM_QUESTION,
-          code: editorValue, // Send current code to agent
+          graphState: graphState,
+          userInput: userInput,
+          userCode: editorValue,
+          timeRemainingSeconds: timerSeconds,
+          // Initial-call fields (used when graphState is null)
           company,
           topic,
-          excludeTopics, // Pass exclusions to API
-          difficulty: 'Medium' // Default for now
+          excludeTopics,
+          sessionId: sessionIdRef.current || "",
+          duration,
         })
       });
 
       const data = await res.json().catch(() => ({} as any));
+
       if (!res.ok) {
         const detail = typeof data?.detail === "string" ? ` ${data.detail}` : "";
         const retry = typeof data?.retryAfterSeconds === "number" ? ` Retry in ${data.retryAfterSeconds}s.` : "";
         const msg = typeof data?.error === "string" ? data.error : `Agent API error (${res.status})`;
         const combined = `${msg}.${detail}${retry}`.trim();
-        setAgentText(`"${combined}"`);
-        setMessages((prev) => [...prev, { role: 'model', content: combined }]);
-        speak(combined); // Speak the error/retry message
+        setStatusText(combined);
+        speak(combined);
         return;
       }
 
-      if (data.message) {
-        setAgentText(`"${data.message}"`);
-        setMessages(prev => [...prev, { role: 'model', content: data.message }]);
-        speak(data.message); // Speak the AI response
+      // Update graph state
+      if (data.graphState) {
+        setGraphState(data.graphState);
       }
 
-      if (data.nextState && data.nextState !== interviewState) {
-        setInterviewState(data.nextState);
-        if (data.nextState === 'coding') {
-          setUnlocked(true);
-          const unlockMsg = data.message || "Editor unlocked. Good luck!";
-          setAgentText(`"${unlockMsg}"`);
-          speak(unlockMsg); // Speak the unlock message
+      // Update phase
+      if (data.phase) {
+        setCurrentPhase(data.phase);
+        setStatusText(getPhaseStatusText(data.phase, data.aiStatusText));
+      }
+
+      // Update editor lock state
+      if (typeof data.editorUnlocked === "boolean") {
+        setUnlocked(data.editorUnlocked);
+      }
+
+      // Handle new question — only reset editor if it's genuinely a new question
+      if (data.newQuestion) {
+        const q = data.newQuestion;
+        const isNewQuestion = !currentQuestion || q.title !== currentQuestion.title;
+        setCurrentQuestion(q);
+
+        if (isNewQuestion) {
+          // Set up test cases from question examples
+          if (q.examples && Array.isArray(q.examples)) {
+            setTestCases(q.examples.map((ex: any) => ({
+              input: String(ex.input ?? ""),
+              expected: String(ex.output ?? ex.expected ?? ""),
+              custom: false,
+            })));
+          } else {
+            setTestCases([]);
+          }
+
+          // Setup editor value with header
+          const header = `// -----------------------------------------------------\n// Company: ${company !== 'Generic' ? company : 'Any'}\n// Topic: ${topic}\n// Problem: ${q.title}\n// -----------------------------------------------------\n\n`;
+          setEditorValue(`${header}class Solution {\npublic:\n    // Implement your solution here\n    \n};\n`);
+
+          setCurrentTestIndex(0);
+          setTestResults([]);
+          setSubmissionStatus(null);
         }
+
+        // Clear newQuestion from graphState so it doesn't re-trigger on next call
+        if (data.graphState) {
+          data.graphState.newQuestion = null;
+        }
+      }
+
+      // Speak AI response (but NOT the question text)
+      if (data.shouldSpeak && data.aiSpeechText) {
+        speak(data.aiSpeechText);
+      }
+
+      // If interview ended
+      if (data.phase === "end_interview") {
+        // Speak and then end after a delay
+        setTimeout(() => {
+          handleEndSession();
+        }, 10000); // Give 10s for the AI to finish speaking
       }
 
     } catch (err) {
       console.error("Agent Error", err);
-      setAgentText("\"Connection error. Please check your API key and try again.\"");
-      setMessages(prev => [...prev, { role: 'model', content: "Connection error. Please check your API key and try again." }]);
+      setStatusText("Connection error. Please check your API key and try again.");
       speak("Connection error. Please check your API key and try again.");
     } finally {
       setIsAgentLoading(false);
     }
   }
 
-
-  // Create a session record when the interview starts.
+  /* ── Session persistence ────────────────────────────────────────── */
   useEffect(() => {
     let cancelled = false;
     endedRef.current = false;
@@ -372,32 +445,6 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
 
         if (error) throw error;
         if (!cancelled) sessionIdRef.current = (data as any)?.id ?? stableId;
-
-        // Fetch custom PYQ in background
-        const { data: qData, error: qErr } = await supabase.rpc('pick_random_dsa_question', {
-          p_company: company === 'Generic' ? null : company,
-          p_exclude_topics: excludeTopics && excludeTopics.length > 0 ? excludeTopics : null,
-          p_session_id: stableId
-        });
-
-        if (!cancelled) {
-          if (!qErr && qData) {
-            setCurrentQuestion(qData);
-            setTestCases((qData.examples && Array.isArray(qData.examples)) ? qData.examples.map((ex: any) => ({
-              input: String(ex.input ?? ""),
-              expected: String(ex.output ?? ex.expected ?? ""),
-              custom: false
-            })) : []);
-            
-            // Setup the initial IDE editor value with a nice comment
-            const header = `// -----------------------------------------------------\n// Company: ${company !== 'Generic' ? company : 'Any'}\n// Topic: ${topic}\n// Problem: ${qData.title}\n// -----------------------------------------------------\n\n`;
-            setEditorValue(`${header}class Solution {\npublic:\n    // Implement your solution here\n    \n};\n`);
-          } else {
-            setCurrentQuestion(FIXED_THREE_SUM_QUESTION);
-            setTestCases(getDefaultThreeSumTestCases());
-            console.warn("Falling back to fixed question, fetch failed:", qErr);
-          }
-        }
       } catch (e) {
         console.warn("Failed to create interview session row", e);
       }
@@ -407,12 +454,12 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
 
     return () => {
       cancelled = true;
-      // Best-effort save on unmount. Avoid ending instantly (StrictMode dev remounts).
       void finishSessionRow({ force: false });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [company, topic, duration, excludeTopics]);
 
+  /* ── Timer ──────────────────────────────────────────────────────── */
   useEffect(() => {
     const t = setInterval(() => setTimerSeconds((s) => Math.max(0, s - 1)), 1000);
     return () => {
@@ -423,7 +470,6 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     };
   }, []);
 
-  // Handle drag-to-resize for console panel
   useEffect(() => {
     function onMove(e: any) {
       if (!draggingRef.current) return;
@@ -451,9 +497,6 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     };
   }, []);
 
-  // Ensure timer is set to the chosen interview duration when the component mounts
-  // or when the duration prop changes. This guarantees the countdown begins
-  // immediately for the full interview time chosen in the SetupModal.
   useEffect(() => {
     setTimerSeconds(duration * 60);
   }, [duration]);
@@ -470,8 +513,6 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
         Math.max(0, Math.floor((Date.now() - startedAtMsRef.current) / 1000))
       );
 
-      // React StrictMode (dev) mounts/unmounts immediately which would otherwise
-      // mark a session ended with 0s elapsed. Skip ultra-fast unmounts.
       if (!opts?.force && elapsed < 3) return;
 
       endedRef.current = true;
@@ -502,21 +543,6 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     onEnd?.();
   }
 
-  function simulateUnlock() {
-    const msg1 = "Analyzing approach... Logic seems sound. Unlocking editor.";
-    setAgentText(msg1);
-    speak(msg1);
-    setListening(false);
-    setTimeout(() => {
-      setInterviewState('coding');
-      setUnlocked(true);
-      const msg2 = `Editor unlocked. You have ${duration} minutes to implement the solution.`;
-      setAgentText(msg2);
-      speak(msg2);
-      editorRef.current?.focus();
-    }, 1200);
-  }
-
   function formatTimer() {
     const hrs = Math.floor(timerSeconds / 3600);
     const mins = Math.floor((timerSeconds % 3600) / 60);
@@ -524,8 +550,8 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }
 
+  /* ── Code execution ────────────────────────────────────────────── */
   async function runCode() {
-    // If there are test cases, run them via the local runner
     if (testCases && testCases.length > 0) {
       await runTests(false);
       return;
@@ -533,7 +559,6 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
 
     try {
       setIsRunning(true);
-      // Show only final output (no interim "Running...")
       const res = await fetch("/api/judge0", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -574,8 +599,7 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     for (let i = 0; i < testCases.length; i++) {
       const tc = testCases[i];
       try {
-        const url = useJudge ? '/api/judge0' : '/api/judge0';
-        const res = await fetch(url, {
+        const res = await fetch('/api/judge0', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ code: editorValue, language, stdin: tc.input }),
@@ -622,8 +646,7 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     if (idx < 0 || idx >= testCases.length) return;
     const tc = testCases[idx];
     try {
-      const url = useJudge ? '/api/judge0' : '/api/judge0';
-      const res = await fetch(url, {
+      const res = await fetch('/api/judge0', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: editorValue, language, stdin: tc.input }),
@@ -659,7 +682,6 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
   }
 
   async function runWithJudge0() {
-    // If we have test cases configured, run them via Judge0
     if (testCases && testCases.length > 0) {
       await runTests(true);
       return;
@@ -720,6 +742,9 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
       const out = data.stdout ?? data.compileStderr ?? data.stderr ?? "";
       setConsoleOutput(success + (out ? `\n${out}` : ""));
       setConsoleVisible(true);
+
+      // After submission, tell the agent we're done
+      await sendToGraph("I have submitted my solution. Please review it.");
     } catch (e) {
       console.error(e);
       setConsoleOutput(`Error: ${String(e)}`);
@@ -729,12 +754,16 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     }
   }
 
+  /* ── Approach hint display ─────────────────────────────────────── */
+  const approachEval = graphState?.approachEval;
+  const approachAttempts = graphState?.approachAttempts ?? 0;
+  const maxAttempts = graphState?.maxApproachAttempts ?? 3;
+
   return (
     <div className="h-screen flex overflow-hidden relative">
-      {/* Header controls (timer + end session) moved into main header for alignment */}
-
       <div className="flex-1 flex overflow-hidden">
         <aside className="w-[35%] flex flex-col border-r border-white/5 bg-slate-900/30">
+          {/* AI Agent Panel — NO captions, just status indicator */}
           <div className="h-64 border-b border-white/5 p-6 flex flex-col relative overflow-hidden">
             <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
 
@@ -743,7 +772,9 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
                 <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span></span>
                 <span className="text-xs font-bold text-blue-400 tracking-wider">AI AGENT ACTIVE</span>
               </div>
-              <span className="text-[10px] text-slate-500 font-mono">STATUS: {listening ? 'LISTENING' : 'READY'}</span>
+              <span className="text-[10px] text-slate-500 font-mono">
+                {currentPhase === "end_interview" ? "ENDED" : listening ? 'LISTENING' : isAiSpeaking ? 'SPEAKING' : isAgentLoading ? 'THINKING' : 'READY'}
+              </span>
             </div>
 
             <div className="flex-1 flex flex-col items-center justify-center">
@@ -754,7 +785,30 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
                 <div className="wave-bar" style={{ animationDelay: '0.3s' }}></div>
                 <div className="wave-bar" style={{ animationDelay: '0.1s' }}></div>
               </div>
-              <p id="agent-text" className="text-center text-sm text-slate-200 font-medium leading-relaxed">{agentText}</p>
+
+              {/* Phase status text — replaces old captions */}
+              <p id="agent-status" className="text-center text-sm text-slate-300 font-medium leading-relaxed max-w-xs">
+                {isAgentLoading ? "Thinking..." : statusText}
+              </p>
+
+              {/* Approach feedback indicator */}
+              {currentPhase === "evaluate_approach" && approachEval && (
+                <div className={`mt-3 px-3 py-1.5 rounded-lg text-xs font-semibold border ${
+                  approachEval.correct && approachEval.optimal
+                    ? 'bg-green-500/10 border-green-500/20 text-green-400'
+                    : approachEval.correct
+                    ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400'
+                    : 'bg-red-500/10 border-red-500/20 text-red-400'
+                }`}>
+                  {approachEval.correct && approachEval.optimal
+                    ? '✓ Optimal approach!'
+                    : approachEval.correct
+                    ? '~ Correct but not optimal'
+                    : '✗ Think again'
+                  }
+                </div>
+              )}
+
               {interimTranscript && (
                 <p className="mt-2 text-xs text-slate-400 italic font-mono text-center opacity-60">
                    Hearing: {interimTranscript}...
@@ -763,16 +817,15 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
             </div>
 
             <div className="mt-4 flex gap-2 justify-center">
-              <button id="mic-btn" className={`w-10 h-10 rounded-full ${listening ? 'bg-red-600 animate-pulse' : 'bg-blue-600'} hover:bg-blue-500 flex items-center justify-center transition shadow-lg shadow-blue-500/20`} onClick={toggleListening}>
+              <button id="mic-btn" className={`w-10 h-10 rounded-full ${listening ? 'bg-red-600 animate-pulse' : 'bg-blue-600'} hover:bg-blue-500 flex items-center justify-center transition shadow-lg shadow-blue-500/20`} onClick={toggleListening} disabled={currentPhase === "end_interview"}>
                 <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" /><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" /></svg>
               </button>
-              {!unlocked && <button onClick={simulateUnlock} className="px-4 py-2 rounded-full border border-white/10 text-xs font-semibold hover:bg-white/5 transition">I'm Ready to Code</button>}
             </div>
           </div>
 
+          {/* Question display area */}
           <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
             <div className="mb-4 flex items-center gap-2">
-              <span className={`text-xs font-bold px-2 py-1 rounded ${currentQuestion?.difficulty === 'Hard' ? 'text-red-400 bg-red-400/10' : currentQuestion?.difficulty === 'Medium' ? 'text-yellow-400 bg-yellow-400/10' : 'text-green-400 bg-green-400/10'}`}>{currentQuestion?.difficulty || "Loading..."}</span>
               {company && company !== "Generic" && (
                 <span className="text-xs font-bold text-blue-400 bg-blue-400/10 px-2 py-1 rounded">{company}</span>
               )}
@@ -791,11 +844,11 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
               </div>
             )}
 
-            {interviewState === 'intro' ? (
+            {currentPhase === 'introduction' ? (
               <div className="flex flex-col items-center justify-center h-64 text-slate-500 animate-pulse bg-slate-800/20 rounded-xl border border-white/5 p-8 mt-12">
                 <svg className="w-12 h-12 mb-4 text-blue-500/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
-                <p className="text-sm font-semibold text-slate-300">Preparing Custom Interview Scenario...</p>
-                <p className="text-xs mt-2 text-slate-500 text-center max-w-xs">Question will be presented automatically when the introduction phase completes.</p>
+                <p className="text-sm font-semibold text-slate-300">Preparing Your Interview...</p>
+                <p className="text-xs mt-2 text-slate-500 text-center max-w-xs">Introduce yourself and the question will be presented after.</p>
               </div>
             ) : currentQuestion ? (
               <>
@@ -810,8 +863,6 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
                       <p className="font-mono text-sm">Output: {ex.output}</p>
                     </div>
                   ))}
-
-                  {/* Testcases moved to right-side panel */}
 
                   {currentQuestion.constraints && (
                     <>
@@ -896,12 +947,10 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
                         const L = line.length;
                         while (i < L) {
                           const ch = line[i];
-                          // Comments
                           if (ch === '/' && i + 1 < L && line[i + 1] === '/') { tokens.push({ type: 'comment', text: line.slice(i), start: i, end: L }); break; }
                           if (ch === '/' && i + 1 < L && line[i + 1] === '*') { const end = line.indexOf('*/', i + 2); const e = end >= 0 ? end + 2 : L; tokens.push({ type: 'comment', text: line.slice(i, e), start: i, end: e }); i = e; continue; }
                           if (ch === '#') { tokens.push({ type: 'comment', text: line.slice(i), start: i, end: L }); break; }
 
-                          // Strings
                           if (ch === '"' || ch === '\'' || ch === '`') {
                             const quote = ch; let j = i + 1; let closed = false;
                             while (j < L) {
@@ -912,20 +961,16 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
                             tokens.push({ type: 'string', text: line.slice(i, j), start: i, end: j }); i = j; continue;
                           }
 
-                          // Numbers
                           if (/[0-9]/.test(ch)) {
                             let j = i + 1; while (j < L && /[0-9\.xXabcdefABCDEF]/.test(line[j])) j++; tokens.push({ type: 'number', text: line.slice(i, j), start: i, end: j }); i = j; continue;
                           }
 
-                          // Identifiers/keywords
                           if (/[A-Za-z_]/.test(ch)) {
                             let j = i + 1; while (j < L && /[A-Za-z0-9_]/.test(line[j])) j++; const txt = line.slice(i, j); const t = keywords.has(txt) ? 'keyword' : (builtins.has(txt) ? 'builtin' : 'ident'); tokens.push({ type: t, text: txt, start: i, end: j }); i = j; continue;
                           }
 
-                          // whitespace
                           if (/\s/.test(ch)) { let j = i + 1; while (j < L && /\s/.test(line[j])) j++; tokens.push({ type: 'whitespace', text: line.slice(i, j), start: i, end: j }); i = j; continue; }
 
-                          // punctuation
                           tokens.push({ type: 'punct', text: ch, start: i, end: i + 1 }); i++;
                         }
                         return tokens;
@@ -935,7 +980,6 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
                         const ln = i + 1;
                         const diags = diagByLine[ln] || [];
                         const tokens = tokenizeLine(lnText);
-                        // build HTML from tokens
                         let html = '';
                         for (let k = 0; k < tokens.length; k++) {
                           const tk = tokens[k];
@@ -954,17 +998,13 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
 
                         if (diags.length === 0) return `<div>${html || ' '}</div>`;
 
-                        // wrap error tokens
                         let wrapped = html;
                         for (const d of diags) {
                           if (typeof d.column === 'number' && d.column > 0) {
                             const col = Math.max(1, Math.min(d.column, lnText.length + 1));
                             const pos = col - 1;
-                            // find token containing pos
                             const tk = tokens.find(t => t.start <= pos && pos < t.end) || tokens[tokens.length - 1];
                             if (tk) {
-                              const before = esc(lnText.slice(0, tk.start));
-                              const after = esc(lnText.slice(tk.end));
                               const tokenHtml = (() => {
                                 const raw = esc(tk.text);
                                 if (tk.type === 'string') return `<span class=\"tok-string\">${raw}</span>`;
@@ -1015,63 +1055,44 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
                 <svg className="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
               </div>
               <h3 className="text-lg font-bold text-white mb-2">Editor Locked</h3>
-              <p className="text-sm text-slate-400 max-w-xs text-center">Please explain your approach to the AI Agent to unlock the coding environment.</p>
+              <p className="text-sm text-slate-400 max-w-xs text-center">
+                {currentPhase === "introduction"
+                  ? "Introduce yourself to the interviewer first."
+                  : "Explain your approach to unlock the editor."}
+              </p>
             </div>
           </div>
-          {/* Bottom console panel (draggable/expandable) */}
+
           {/* Bottom Panel */}
           <div className="absolute left-0 right-0 bottom-12 bg-[#1e1e1e] border-t border-[#333]">
-
-            {/* Tabs */}
             <div className="flex items-center gap-6 px-4 py-2 border-b border-[#333] text-sm">
-
               <button
                 onClick={() => setActiveBottomTab("testcase")}
-                className={`${activeBottomTab === "testcase"
-                    ? "text-green-400"
-                    : "text-slate-400"
-                  }`}
+                className={`${activeBottomTab === "testcase" ? "text-green-400" : "text-slate-400"}`}
               >
                 Testcase
               </button>
-
               <button
                 onClick={() => setActiveBottomTab("result")}
-                className={`${activeBottomTab === "result"
-                    ? "text-green-400"
-                    : "text-slate-400"
-                  }`}
+                className={`${activeBottomTab === "result" ? "text-green-400" : "text-slate-400"}`}
               >
                 Test Result
               </button>
-
             </div>
 
-            {/* Content */}
             <div className="p-4 max-h-[300px] overflow-auto">
               {activeBottomTab === "testcase" && (
-
                 <div>
-
-                  {/* Case Tabs + Run Buttons */}
                   <div className="flex items-center justify-between mb-4">
-
                     <div className="flex gap-2">
-
                       {testCases.map((_, i) => (
-
                         <button
                           key={i}
                           onClick={() => setCurrentTestIndex(i)}
-                          className={`px-3 py-1 text-xs rounded ${currentTestIndex === i
-                              ? "bg-slate-700 text-white"
-                              : "bg-slate-800 text-slate-400"
-                            }`}
+                          className={`px-3 py-1 text-xs rounded ${currentTestIndex === i ? "bg-slate-700 text-white" : "bg-slate-800 text-slate-400"}`}
                         >
                           Case {i + 1}
                         </button>
-
-
                       ))}
                       <button
                         onClick={() => {
@@ -1084,132 +1105,59 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
                         +
                       </button>
                     </div>
-
                     <div className="flex gap-2">
-
-                      <button
-                        onClick={() => runCase(false)}
-                        className="px-3 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600"
-                      >
-                        Run Case
-                      </button>
-
-                      <button
-                        onClick={() => runTests(false)}
-                        className="px-3 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600"
-                      >
-                        Run All
-                      </button>
-
+                      <button onClick={() => runCase(false)} className="px-3 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600">Run Case</button>
+                      <button onClick={() => runTests(false)} className="px-3 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600">Run All</button>
                     </div>
-
                   </div>
 
-                  {/* Input */}
                   <div className="mb-3">
-
                     <div className="text-xs text-slate-400 mb-1">Input</div>
-
                     {testCases[currentTestIndex]?.custom ? (
-
                       <textarea
                         value={testCases[currentTestIndex]?.input || ""}
                         onChange={(e) => {
                           const next = [...testCases];
-                          next[currentTestIndex] = {
-                            ...(next[currentTestIndex]),
-                            input: e.target.value,
-                          };
+                          next[currentTestIndex] = { ...(next[currentTestIndex]), input: e.target.value };
                           setTestCases(next);
                         }}
                         className="w-full bg-slate-800 p-2 text-xs text-white rounded resize-none"
                         rows={3}
                       />
-
                     ) : (
-
-                      <div className="bg-slate-800 p-3 rounded text-sm">
-                        {testCases[currentTestIndex]?.input}
-                      </div>
-
+                      <div className="bg-slate-800 p-3 rounded text-sm">{testCases[currentTestIndex]?.input}</div>
                     )}
-
                   </div>
 
-                  {/* Expected */}
-
                   <div>
-
                     <div className="text-xs text-slate-400 mb-1">Expected</div>
-
                     {testCases[currentTestIndex]?.custom ? (
-
                       <textarea
                         value={testCases[currentTestIndex]?.expected || ""}
                         onChange={(e) => {
                           const next = [...testCases];
-                          next[currentTestIndex] = {
-                            ...(next[currentTestIndex]),
-                            expected: e.target.value,
-                          };
+                          next[currentTestIndex] = { ...(next[currentTestIndex]), expected: e.target.value };
                           setTestCases(next);
                         }}
                         className="w-full bg-slate-800 p-2 text-xs text-white rounded resize-none"
                         rows={2}
                       />
-
                     ) : (
-
-                      <div className="bg-slate-800 p-3 rounded text-sm">
-                        {testCases[currentTestIndex]?.expected}
-                      </div>
-
+                      <div className="bg-slate-800 p-3 rounded text-sm">{testCases[currentTestIndex]?.expected}</div>
                     )}
-
                   </div>
-
                 </div>
-
               )}
 
               {activeBottomTab === "result" && (
-
                 <div>
-
-                  {submissionStatus === "compile" && (
-
-                    <div className="text-red-400 font-semibold mb-3">
-                      Compile Error
-                    </div>
-
-                  )}
-
-                  {submissionStatus === "wrong" && (
-
-                    <div className="text-red-400 font-semibold mb-3">
-                      Wrong Answer
-                    </div>
-
-                  )}
-
-                  {submissionStatus === "accepted" && (
-
-                    <div className="text-green-400 font-semibold mb-3">
-                      Accepted
-                    </div>
-
-                  )}
-
-                  <pre className="bg-slate-900 p-3 rounded text-xs whitespace-pre-wrap">
-                    {consoleOutput}
-                  </pre>
-
+                  {submissionStatus === "compile" && (<div className="text-red-400 font-semibold mb-3">Compile Error</div>)}
+                  {submissionStatus === "wrong" && (<div className="text-red-400 font-semibold mb-3">Wrong Answer</div>)}
+                  {submissionStatus === "accepted" && (<div className="text-green-400 font-semibold mb-3">Accepted</div>)}
+                  <pre className="bg-slate-900 p-3 rounded text-xs whitespace-pre-wrap">{consoleOutput}</pre>
                 </div>
-
               )}
-
             </div>
-
           </div>
 
           <style jsx>{`
@@ -1219,7 +1167,6 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
               text-decoration-color: #ff4d4f;
               text-decoration-thickness: 2px;
             }
-            /* Syntax token colors */
             :global(.tok-keyword) { color: #c792ea; font-weight: 600; }
             :global(.tok-string) { color: #8fbd5f; }
             :global(.tok-comment) { color: #6b7280; font-style: italic; }
@@ -1227,14 +1174,12 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
             :global(.tok-builtin) { color: #4fd1fe; }
             :global(.tok-ident) { color: #e6edf3; }
             :global(.tok-punct) { color: #e2e8f0; }
-            /* Ensure pre, textarea, and gutter line up */
             :global(.editor-area) pre, :global(.editor-area) textarea { line-height: 1.5; font-size: 13px; box-sizing: border-box; }
             pre { line-height: 1.5; }
             .gutter { background: rgba(2,6,23,0.6); color: #94a3b8; padding-top: 24px; overflow: auto; display: flex; flex-direction: column; align-items: flex-end; padding-right: 8px; }
             .gutter-line { line-height: 1.5; height: 1.5em; padding: 0 6px; text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Courier New", monospace; }
           `}</style>
 
-          {/* Custom input (toggleable) */}
           {showCustomInput && (
             <div className="px-4 pb-2" style={{ background: '#1e1e1e', borderTop: '1px solid #333' }}>
               <div className="text-xs text-slate-400 mb-1">Custom Input (stdin)</div>
@@ -1249,13 +1194,9 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
           )}
 
           <div className="h-12 bg-[#1e1e1e] border-t border-[#333] flex items-center justify-between px-4 shrink-0">
-
             <div className="flex items-center gap-3">
-              {/* <button onClick={() => setConsoleVisible((v) => !v)} className="text-xs text-slate-400 hover:text-white flex items-center gap-2">Console</button>
-              <button onClick={() => setShowCustomInput((s) => !s)} className="text-xs text-slate-400 hover:text-white flex items-center gap-2">Input</button> */}
             </div>
             <div className="flex items-center gap-3">
-              {/* <button onClick={runCode} disabled={isRunning} className="px-4 py-1.5 rounded text-xs font-semibold text-slate-300 hover:bg-white/5 border border-transparent transition disabled:opacity-50 disabled:cursor-not-allowed">Run Code</button> */}
               <button onClick={runWithJudge0} disabled={isRunning} className="px-4 py-1.5 rounded text-xs font-semibold text-slate-300 hover:bg-white/5 border border-transparent transition disabled:opacity-50 disabled:cursor-not-allowed">Run</button>
               <button onClick={submitSolution} disabled={isRunning} className="px-4 py-1.5 rounded text-xs font-semibold bg-green-600 text-white hover:bg-green-500 transition shadow-lg shadow-green-500/10 disabled:opacity-50 disabled:cursor-not-allowed">Submit</button>
             </div>
