@@ -28,9 +28,10 @@ export default function AuthOverlay() {
   if (!visible) return null;
 
   async function handleOAuth(provider: "google" | "github") {
+    if (!supabase) return setMessage("Supabase not initialized.");
     // Redirect back to the account page after OAuth completes
     const redirectTo = typeof window !== "undefined" ? `${window.location.origin}/account` : undefined;
-    await supabase!.auth.signInWithOAuth({ provider, options: { redirectTo } });
+    await supabase.auth.signInWithOAuth({ provider, options: { redirectTo } });
   }
 
   const emailRegex = /^\S+@\S+\.\S+$/;
