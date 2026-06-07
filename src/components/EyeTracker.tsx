@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import Script from "next/script";
+import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 
 type EyeTrackerProps = {
   onLookAway: () => void;
@@ -9,18 +9,17 @@ type EyeTrackerProps = {
 };
 
 export default function EyeTracker({ onLookAway, lookAwayThresholdMs = 3000 }: EyeTrackerProps) {
-  const [cvReady, setCvReady] = useState(false);
-  const [status, setStatus] = useState("Loading OpenCV...");
+  const [status, setStatus] = useState("Initializing camera...");
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const lookAwayStartRef = useRef<number | null>(null);
   const runningRef = useRef(false);
   const allStreamsRef = useRef<MediaStream[]>([]);
 
-  // Request camera immediately on mount so the permission prompt triggers alongside the mic prompt
+  // Request camera on mount
   useEffect(() => {
     let unmounted = false;
     if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
+      setStatus("Initializing camera...");
       navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } })
         .then(stream => {
           if (unmounted) {
@@ -33,7 +32,10 @@ export default function EyeTracker({ onLookAway, lookAwayThresholdMs = 3000 }: E
             videoRef.current.play().catch(() => {});
           }
         })
-        .catch(err => console.warn("Early camera permission error:", err));
+        .catch(err => {
+          console.warn("Early camera permission error:", err);
+          setStatus("Camera permission denied");
+        });
     }
     return () => {
       unmounted = true;
@@ -41,125 +43,99 @@ export default function EyeTracker({ onLookAway, lookAwayThresholdMs = 3000 }: E
   }, []);
 
   useEffect(() => {
-    if (!cvReady) return;
-
     let isCancelled = false;
     runningRef.current = true;
-    let cap: any;
-    let faceClassifier: any;
-    let eyeClassifier: any;
-    let src: any;
-    let gray: any;
+    let faceLandmarker: FaceLandmarker | null = null;
     let requestFrameId: number;
 
     const initTracker = async () => {
-      const cv = (window as any).cv;
-      if (!cv) return;
-
       try {
-        setStatus("Fetching cascade files...");
-        // Fetch Haar Cascades from public folder
-        const faceRes = await fetch("/cascades/haarcascade_frontalface_default.xml");
-        const eyeRes = await fetch("/cascades/haarcascade_eye.xml");
+        setStatus("Loading ML Model...");
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+        );
         
-        const faceBuf = await faceRes.arrayBuffer();
-        const eyeBuf = await eyeRes.arrayBuffer();
+        if (isCancelled) return;
 
-        try {
-          cv.FS_createDataFile("/", "face.xml", new Uint8Array(faceBuf), true, false, false);
-        } catch (e) { /* ignore if already exists */ }
-        
-        try {
-          cv.FS_createDataFile("/", "eye.xml", new Uint8Array(eyeBuf), true, false, false);
-        } catch (e) { /* ignore if already exists */ }
+        faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+            delegate: "GPU"
+          },
+          outputFaceBlendshapes: true,
+          runningMode: "VIDEO",
+          numFaces: 1
+        });
 
-        setStatus("Initializing camera...");
-        
-        let stream = videoRef.current?.srcObject as MediaStream;
-        if (!stream) {
-          stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
-          if (isCancelled) {
-            stream.getTracks().forEach(t => t.stop());
-            return;
-          }
-          allStreamsRef.current.push(stream);
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            await videoRef.current.play().catch(() => {});
-          }
-        } else {
-          if (isCancelled) return;
-          await videoRef.current!.play().catch(() => {});
-        }
-          
-        // Wait for video metadata to have correct dimensions
-          if (videoRef.current && videoRef.current.videoWidth === 0) {
-            await new Promise((resolve) => {
-              if (isCancelled) return resolve(null);
-              if (videoRef.current) {
-                videoRef.current.onloadedmetadata = resolve as any;
-              }
-            });
-          }
-        
         if (isCancelled) return;
 
         setStatus("Tracking Active");
 
-        const width = videoRef.current!.videoWidth || 320;
-        const height = videoRef.current!.videoHeight || 240;
-
-        src = new cv.Mat(height, width, cv.CV_8UC4);
-        gray = new cv.Mat();
-        cap = new cv.VideoCapture(videoRef.current!);
-        faceClassifier = new cv.CascadeClassifier();
-        eyeClassifier = new cv.CascadeClassifier();
-        
-        faceClassifier.load("face.xml");
-        eyeClassifier.load("eye.xml");
+        let lastVideoTime = -1;
+        let isLookingAtScreen = true; // Persist state across frames
 
         const processVideo = () => {
-          if (isCancelled || !runningRef.current || !videoRef.current) return;
+          if (isCancelled || !runningRef.current || !videoRef.current || !faceLandmarker) return;
           
           try {
-            cap.read(src);
-            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+            const video = videoRef.current;
 
-            // Detect faces
-            const faces = new cv.RectVector();
-            const eyes = new cv.RectVector();
-            
-            faceClassifier.detectMultiScale(gray, faces, 1.1, 3, 0);
-            
-            let isLookingAtScreen = false;
+            if (video.readyState >= 2 && lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                const startTimeMs = performance.now();
+                const result = faceLandmarker.detectForVideo(video, startTimeMs);
+                
+                isLookingAtScreen = false;
 
-            if (faces.size() > 0) {
-              isLookingAtScreen = true; // For robustness, finding a face is often enough
-              
-              // We could enforce open eyes too, but it can be flaky with glasses/lighting.
-              // Just to be strict as requested:
-              const face = faces.get(0);
-              const roiGray = gray.roi(face);
-              eyeClassifier.detectMultiScale(roiGray, eyes, 1.1, 3, 0);
-              // If we want to strictly require eyes: 
-              // isLookingAtScreen = eyes.size() > 0;
-              roiGray.delete();
-            }
+                if (result.faceLandmarks && result.faceLandmarks.length > 0) {
+                  const landmarks = result.faceLandmarks[0];
+                  
+                  // Nose tip (1), Left edge (234), Right edge (454)
+                  const nose = landmarks[1];
+                  const left = landmarks[234];
+                  const right = landmarks[454];
 
-            faces.delete();
-            eyes.delete();
+                  const distLeft = Math.abs(nose.x - left.x);
+                  const distRight = Math.abs(nose.x - right.x);
+                  const yawRatio = distLeft / (distLeft + distRight);
 
-            // Render to debug canvas if needed (optional)
-            if (canvasRef.current) {
-              cv.imshow(canvasRef.current, src);
+                  // Top of face (10), Bottom of face (152)
+                  const top = landmarks[10];
+                  const bottom = landmarks[152];
+                  const distTop = Math.abs(nose.y - top.y);
+                  const distBottom = Math.abs(nose.y - bottom.y);
+                  const pitchRatio = distTop / (distTop + distBottom);
+
+                  let isEyeLookingAway = false;
+                  if (result.faceBlendshapes && result.faceBlendshapes.length > 0) {
+                    const shapes = result.faceBlendshapes[0].categories;
+                    const getScore = (name: string) => shapes.find(s => s.categoryName === name)?.score || 0;
+                    
+                    const maxEyeLook = Math.max(
+                      getScore("eyeLookOutLeft"), getScore("eyeLookInLeft"),
+                      getScore("eyeLookOutRight"), getScore("eyeLookInRight")
+                    );
+                    
+                    if (maxEyeLook > 0.65) {
+                      isEyeLookingAway = true;
+                    }
+                  }
+
+                  // 0.5 is perfectly straight.
+                  // Looking away threshold: > 0.75 or < 0.25 is a strong head turn.
+                  const isHeadTurned = yawRatio < 0.25 || yawRatio > 0.75 || pitchRatio < 0.25 || pitchRatio > 0.75;
+
+                  if (!isHeadTurned && !isEyeLookingAway) {
+                    isLookingAtScreen = true;
+                  }
+                }
             }
 
             // Logic to trigger onLookAway
-            if (!isLookingAtScreen) {
+            if (!isLookingAtScreen && video.readyState >= 2) {
               if (lookAwayStartRef.current === null) {
                 lookAwayStartRef.current = Date.now();
               } else if (Date.now() - lookAwayStartRef.current > lookAwayThresholdMs) {
-                // Trigger event, then reset timer so we don't spam
                 onLookAway();
                 lookAwayStartRef.current = null;
               }
@@ -167,13 +143,10 @@ export default function EyeTracker({ onLookAway, lookAwayThresholdMs = 3000 }: E
               lookAwayStartRef.current = null; // Reset when they look back
             }
           } catch (err) {
-            console.error("OpenCV process error:", err);
+            console.error("Tracker process error:", err);
           }
 
-          // Delay slightly to not freeze UI thread (e.g. 10 FPS is enough for tracking)
-          setTimeout(() => {
-            requestFrameId = requestAnimationFrame(processVideo);
-          }, 100);
+          requestFrameId = requestAnimationFrame(processVideo);
         };
 
         requestFrameId = requestAnimationFrame(processVideo);
@@ -184,18 +157,22 @@ export default function EyeTracker({ onLookAway, lookAwayThresholdMs = 3000 }: E
       }
     };
 
-    initTracker();
+    // Wait until video has dimensions
+    const checkVideo = setInterval(() => {
+      if (videoRef.current && videoRef.current.videoWidth > 0) {
+        clearInterval(checkVideo);
+        initTracker();
+      }
+    }, 100);
 
     return () => {
       isCancelled = true;
       runningRef.current = false;
+      clearInterval(checkVideo);
       if (requestFrameId) cancelAnimationFrame(requestFrameId);
-      if (src) src.delete();
-      if (gray) gray.delete();
-      if (faceClassifier) faceClassifier.delete();
-      if (eyeClassifier) eyeClassifier.delete();
+      if (faceLandmarker) faceLandmarker.close();
     };
-  }, [cvReady, onLookAway, lookAwayThresholdMs]);
+  }, [onLookAway, lookAwayThresholdMs]);
 
   // Master cleanup for all created streams on component unmount
   useEffect(() => {
@@ -208,21 +185,6 @@ export default function EyeTracker({ onLookAway, lookAwayThresholdMs = 3000 }: E
 
   return (
     <div className="absolute bottom-4 right-4 z-50 bg-black/50 p-2 rounded-xl border border-white/10 backdrop-blur-sm shadow-xl">
-      {/* Script tag to load OpenCV lazily */}
-      <Script 
-        src="https://docs.opencv.org/4.8.0/opencv.js" 
-        strategy="afterInteractive"
-        onLoad={() => {
-          const checkCv = setInterval(() => {
-            const cv = (window as any).cv;
-            if (cv && typeof cv.Mat === 'function') {
-              clearInterval(checkCv);
-              setCvReady(true);
-            }
-          }, 100);
-        }}
-      />
-      
       <div className="flex flex-col items-center gap-2">
         <span className="text-[10px] text-slate-300 font-mono tracking-wider uppercase flex items-center gap-2">
           {status === "Tracking Active" && <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>}
@@ -230,21 +192,14 @@ export default function EyeTracker({ onLookAway, lookAwayThresholdMs = 3000 }: E
           {status}
         </span>
         <div className="relative rounded overflow-hidden shadow-inner bg-black w-[160px] h-[120px]">
-          {/* We use a hidden video for capture, and show the canvas feed which has OpenCV output (optional) or just the raw feed */}
           <video 
             ref={videoRef} 
-            className="hidden" 
+            className="w-full h-full object-cover transform -scale-x-100" 
             width={320} 
             height={240} 
             playsInline 
             autoPlay 
             muted 
-          />
-          <canvas 
-            ref={canvasRef} 
-            className="w-full h-full object-cover transform -scale-x-100" 
-            width={320} 
-            height={240} 
           />
         </div>
       </div>

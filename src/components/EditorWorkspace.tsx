@@ -5,6 +5,7 @@ import { supabase } from "../lib/supabaseClient";
 import type { InterviewGraphState, InterviewPhase, DSAQuestion } from "../lib/graph-state";
 import type { InterviewFeedback } from "../lib/feedback-schema";
 import FeedbackModal from "./FeedbackModal";
+
 import EyeTracker from "./EyeTracker";
 
 const ACTIVE_SESSION_STORAGE_KEY = "interview_agent_active_session_v1";
