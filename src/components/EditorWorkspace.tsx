@@ -3,6 +3,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import type { InterviewGraphState, InterviewPhase, DSAQuestion } from "../lib/graph-state";
+import type { InterviewFeedback } from "../lib/feedback-schema";
+import FeedbackModal from "./FeedbackModal";
 
 const ACTIVE_SESSION_STORAGE_KEY = "interview_agent_active_session_v1";
 
@@ -103,6 +105,12 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
   const [statusText, setStatusText] = useState("Connecting to session...");
   const [currentQuestion, setCurrentQuestion] = useState<any>(null);
   const [isAgentLoading, setIsAgentLoading] = useState(false);
+  const [feedback, setFeedback] = useState<InterviewFeedback | null>(null);
+  const [feedbackId, setFeedbackId] = useState<string | null>(null);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const feedbackRequestedRef = useRef(false);
 
   const [language, setLanguage] = useState("C++ 17");
   const [consoleVisible, setConsoleVisible] = useState(false);
@@ -146,6 +154,12 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
     setTestResults([]);
     setSubmissionStatus(null);
     setStatusText("Connecting to session...");
+    setFeedback(null);
+    setFeedbackId(null);
+    setFeedbackLoading(false);
+    setShowFeedbackModal(false);
+    setFeedbackError(null);
+    feedbackRequestedRef.current = false;
 
     void startInterview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -212,6 +226,75 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
   // Keep sendToGraphRef always pointing to the latest sendToGraph
   // so the onend handler (set up once) can call the current version.
   sendToGraphRef.current = sendToGraph;
+
+  async function getAuthToken() {
+    try {
+      if (!supabase) return null;
+      const { data, error } = await supabase.auth.getSession();
+      if (error || !data?.session) return null;
+      return data.session.access_token ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function requestInterviewFeedback(state: InterviewGraphState) {
+    if (feedbackRequestedRef.current) return;
+    feedbackRequestedRef.current = true;
+    setFeedbackLoading(true);
+    setFeedbackError(null);
+    setStatusText("Generating final interview evaluation...");
+
+    try {
+      if (!sessionIdRef.current) {
+        throw new Error("No session ID available when attempting to save feedback.");
+      }
+
+      const token = await getAuthToken();
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          sessionId: sessionIdRef.current,
+          messages: state.messages,
+          userCode: state.userCode,
+          questionsAsked: state.questionsAsked,
+          company,
+          topic,
+          approachEval: state.approachEval,
+          currentQuestion: state.currentQuestion,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok) {
+        throw new Error(data?.error || data?.detail || data?.dbError || `Unable to generate feedback (${res.status})`);
+      }
+
+      if (!data.feedback) {
+        throw new Error("Feedback API returned no feedback.");
+      }
+
+      // Even if there was a DB error, show the feedback on the modal
+      if (data?.dbError) {
+        console.warn("Feedback API warning:", data.dbError);
+      }
+
+      setFeedback(data.feedback as InterviewFeedback);
+      setFeedbackId(data.feedbackId ?? null);
+      setShowFeedbackModal(true);
+      setStatusText("Final evaluation ready.");
+    } catch (error: any) {
+      console.error("Feedback generation failed", error);
+      setFeedbackError(typeof error === "string" ? error : error?.message ?? "Unable to generate feedback");
+      setStatusText("Final evaluation could not be generated.");
+    } finally {
+      setFeedbackLoading(false);
+    }
+  }
 
   const toggleListening = () => {
     if (!recognitionRef.current) {
@@ -389,11 +472,8 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
       }
 
       // If interview ended
-      if (data.phase === "end_interview") {
-        // Speak and then end after a delay
-        setTimeout(() => {
-          handleEndSession();
-        }, 10000); // Give 10s for the AI to finish speaking
+      if (data.phase === "end_interview" && data.graphState) {
+        void requestInterviewFeedback(data.graphState as InterviewGraphState);
       }
 
     } catch (err) {
@@ -540,6 +620,15 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
 
   async function handleEndSession() {
     await finishSessionRow({ force: true });
+
+    if (graphState && !feedbackRequestedRef.current) {
+      try {
+        await requestInterviewFeedback(graphState);
+      } catch (e) {
+        console.warn("Feedback generation failed during manual end", e);
+      }
+    }
+
     onEnd?.();
   }
 
@@ -909,6 +998,17 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
               </button>
             </div>
           </div>
+          {feedback && !showFeedbackModal && (
+            <div className="px-4 py-3 border-t border-white/5 bg-slate-950/70 text-xs text-slate-300 flex items-center justify-between gap-3">
+              <span>Final feedback is ready.</span>
+              <button
+                className="text-blue-300 hover:text-white font-semibold"
+                onClick={() => setShowFeedbackModal(true)}
+              >
+                View feedback
+              </button>
+            </div>
+          )}
 
           <div className="flex-1 relative pb-[340px]" style={{ minHeight: 0 }}>
             <div className="absolute inset-0 w-full h-full flex">
@@ -1203,6 +1303,15 @@ export default function EditorWorkspace({ company, topic, duration, excludeTopic
           </div>
         </main>
       </div>
+      {(showFeedbackModal || feedbackLoading) && (
+        <FeedbackModal
+          feedback={feedback}
+          feedbackId={feedbackId}
+          sessionId={sessionIdRef.current}
+          isLoading={feedbackLoading}
+          onClose={() => setShowFeedbackModal(false)}
+        />
+      )}
     </div>
   );
 }

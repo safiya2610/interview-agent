@@ -198,14 +198,21 @@ function DashboardInner() {
               ) : (
                 <div className="space-y-3">
                   {recentSessions.map((s) => (
-                    <div key={s.id} className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold text-white truncate">{s.company} • {s.topic}</div>
-                        <div className="text-xs text-slate-400">{new Date(s.created_at).toLocaleString()}</div>
+                    <div key={s.id} className="flex flex-col gap-3 rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-white truncate">{s.company} • {s.topic}</div>
+                          <div className="text-xs text-slate-400">{new Date(s.created_at).toLocaleString()}</div>
+                        </div>
+                        <div className="flex items-center gap-4 shrink-0">
+                          <div className="text-xs text-slate-300">{formatMinutes(s.elapsed_seconds)} / {s.duration_minutes}m</div>
+                          <div className="text-xs font-bold text-blue-300">Score: {s.agent_score ?? 8}</div>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-4 shrink-0">
-                        <div className="text-xs text-slate-300">{formatMinutes(s.elapsed_seconds)} / {s.duration_minutes}m</div>
-                        <div className="text-xs font-bold text-blue-300">Score: {s.agent_score ?? 8}</div>
+                      <div className="flex items-center justify-end gap-3">
+                        <Link href={`/dashboard/sessions/${s.id}/feedback`} className="text-xs font-semibold text-indigo-400 hover:text-indigo-300">
+                          View Feedback
+                        </Link>
                       </div>
                     </div>
                   ))}
